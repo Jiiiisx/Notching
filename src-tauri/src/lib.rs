@@ -3,6 +3,7 @@ mod game_detector;
 mod hit_test;
 mod media;
 mod queue_server;
+mod system_monitor;
 mod window_helper;
 
 use std::collections::HashMap;
@@ -81,6 +82,7 @@ fn set_notch_size(
             window_helper::NOTCH_CANVAS_HEIGHT,
             effective_monitor.as_deref(),
         );
+        let _ = app.emit("notch-monitor-repositioned", effective_monitor);
     }
 }
 
@@ -227,6 +229,13 @@ fn get_system_quick_paths() -> HashMap<String, String> {
     map
 }
 
+#[tauri::command]
+fn get_system_stats(
+    state: tauri::State<Arc<system_monitor::SystemMonitor>>,
+) -> system_monitor::SystemStats {
+    state.get_stats()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -335,6 +344,10 @@ pub fn run() {
             // Start system audio monitor (master volume & device changes)
             audio_manager::start_audio_monitor(app.handle().clone());
 
+            // Initialize system monitor
+            let sys_monitor = system_monitor::SystemMonitor::new();
+            app.manage(sys_monitor);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -355,7 +368,8 @@ pub fn run() {
             get_audio_status,
             set_master_volume,
             set_master_mute,
-            set_default_audio_device
+            set_default_audio_device,
+            get_system_stats
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

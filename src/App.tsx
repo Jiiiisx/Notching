@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
-import { motion, AnimatePresence, animate } from "motion/react";
+import { motion, AnimatePresence } from "motion/react";
 import {
   Play,
   Pause,
@@ -20,9 +20,12 @@ import {
   Layers,
   Volume2,
   VolumeX,
+  Activity,
+  Monitor,
 } from "lucide-react";
 import { TodoList, TodoItem } from "./TodoList";
 import { Shelf } from "./Shelf";
+import { PerformanceHUD } from "./PerformanceHUD";
 import { AudioSwitcher, AudioStatus } from "./AudioSwitcher";
 import {
   NotchSettings,
@@ -138,12 +141,12 @@ export default function App() {
   const [lyricsLoading, setLyricsLoading] = useState(false);
   const lastFetchedTrackRef = useRef<string>("");
 
-  type AppModule = "media" | "todo" | "shelf";
-  const MODULES: AppModule[] = ["media", "todo", "shelf"];
+  type AppModule = "media" | "todo" | "shelf" | "perf";
+  const MODULES: AppModule[] = ["media", "todo", "shelf", "perf"];
 
   const [activeModule, setActiveModule] = useState<AppModule>(() => {
     const saved = localStorage.getItem("notch_active_module");
-    if (saved === "media" || saved === "todo" || saved === "shelf") return saved;
+    if (saved === "media" || saved === "todo" || saved === "shelf" || saved === "perf") return saved;
     return "media";
   });
 
@@ -240,7 +243,7 @@ export default function App() {
         if (Math.abs(e.deltaY) > 15) {
           lastWheelTimeRef.current = now;
           if (e.deltaY > 0) switchModule("todo");
-          else switchModule("shelf");
+          else switchModule("perf");
         }
       } else if (activeModule === "todo") {
         let canScrollY = false;
@@ -292,8 +295,14 @@ export default function App() {
             switchModule("todo");
           } else if (e.deltaY > 15) {
             lastWheelTimeRef.current = now;
-            switchModule("media");
+            switchModule("perf");
           }
+        }
+      } else if (activeModule === "perf") {
+        if (Math.abs(e.deltaY) > 15) {
+          lastWheelTimeRef.current = now;
+          if (e.deltaY > 0) switchModule("media");
+          else switchModule("shelf");
         }
       }
     }
@@ -308,6 +317,71 @@ export default function App() {
   const notchRef = useRef<HTMLDivElement | null>(null);
   const lyricsContainerRef = useRef<HTMLDivElement | null>(null);
   const [isSmartCompact, setIsSmartCompact] = useState(false);
+  const [dropY, setDropY] = useState(0);
+  const isDroppingRef = useRef(false);
+  const [availableMonitors, setAvailableMonitors] = useState<{
+    id: string;
+    label: string;
+    is_primary: boolean;
+    width: number;
+    height: number;
+    scale_factor: number;
+  }[]>([]);
+
+  const triggerBezelDrop = () => {
+    if (isDroppingRef.current) return;
+    isDroppingRef.current = true;
+
+    // 1. Instantly tuck the notch up off-screen behind the display bezel
+    const tuckOffset = expandedRef.current ? -100 : -56;
+    setDropY(tuckOffset);
+
+    // 2. Wait 95ms for OS SetWindowPos, DPI swap & DWM surface presentation on new screen
+    setTimeout(() => {
+      setDropY(0);
+      setTimeout(() => {
+        isDroppingRef.current = false;
+      }, 500);
+    }, 95);
+  };
+
+  useEffect(() => {
+    invoke<{
+      id: string;
+      label: string;
+      is_primary: boolean;
+      width: number;
+      height: number;
+      scale_factor: number;
+    }[]>("get_available_monitors")
+      .then((mons) => {
+        if (mons) {
+          const physical = mons.filter((m) => m.id !== "primary");
+          setAvailableMonitors(physical.length > 0 ? physical : mons);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const cycleMonitor = () => {
+    if (availableMonitors.length < 2) return;
+    const currentId = settings.targetMonitor ?? "primary";
+    const currentIdx = availableMonitors.findIndex((m) => m.id === currentId);
+    const nextIdx = (currentIdx + 1) % availableMonitors.length;
+    const nextMon = availableMonitors[nextIdx];
+    if (nextMon) {
+      const updated = { ...settings, targetMonitor: nextMon.id };
+      setSettings(updated);
+      saveSettings(updated);
+      emit("notch-settings-update", updated).catch(() => {});
+      invoke("set_notch_size", {
+        width: 760,
+        height: 400,
+        targetMonitor: nextMon.id,
+      }).catch(() => {});
+      triggerBezelDrop();
+    }
+  };
 
   useEffect(() => {
     expandedRef.current = expanded;
@@ -331,30 +405,26 @@ export default function App() {
 
   useEffect(() => {
     if (prevMonitorRef.current !== undefined && prevMonitorRef.current !== settings.targetMonitor) {
-      if (notchRef.current) {
-        animate(
-          notchRef.current,
-          { y: [-36, 0] },
-          { type: "spring", stiffness: 340, damping: 20, mass: 0.7 }
-        );
-      }
+      triggerBezelDrop();
     }
     prevMonitorRef.current = settings.targetMonitor;
   }, [settings.targetMonitor]);
 
-  // Listen to game mode shifts for bezel-drop animation
+  // Listen to game mode shifts & backend repositioning for bezel-drop animation
   useEffect(() => {
-    const unlistenPromise = listen<{ active: boolean; shifted_to?: string | null }>("game-mode-status", (event) => {
-      if (event.payload.active && event.payload.shifted_to && notchRef.current) {
-        animate(
-          notchRef.current,
-          { y: [-36, 0] },
-          { type: "spring", stiffness: 340, damping: 20, mass: 0.7 }
-        );
+    const unlistenStatus = listen<{ active: boolean; shifted_to?: string | null }>("game-mode-status", (event) => {
+      if (event.payload.shifted_to || !event.payload.active) {
+        triggerBezelDrop();
       }
     });
+
+    const unlistenRepo = listen<string | null>("notch-monitor-repositioned", () => {
+      triggerBezelDrop();
+    });
+
     return () => {
-      unlistenPromise.then((fn) => fn());
+      unlistenStatus.then((fn) => fn());
+      unlistenRepo.then((fn) => fn());
     };
   }, []);
 
@@ -891,6 +961,7 @@ export default function App() {
     if (showAudioSwitcher) return 480;
     if (activeModule === "todo" || activeModule === "shelf") return 520;
     if (expandedView === "lyrics" || expandedView === "queue") return 480;
+    if (activeModule === "perf") return 470;
     return 460;
   }, [expanded, isCompact, dynamicCollapsedWidth, showVolumeHud, showAudioSwitcher, activeModule, expandedView]);
 
@@ -902,6 +973,7 @@ export default function App() {
     if (showAudioSwitcher) return 335;
     if (activeModule === "todo" || activeModule === "shelf") return 290;
     if (expandedView === "lyrics" || expandedView === "queue") return 320;
+    if (activeModule === "perf") return 258;
     return dims.expanded_height || 232;
   }, [expanded, isCompact, dims.collapsed_height, dims.expanded_height, showVolumeHud, showAudioSwitcher, activeModule, expandedView]);
 
@@ -995,22 +1067,22 @@ export default function App() {
           width: targetWidth,
           height: targetHeight,
           borderRadius: targetBorderRadius,
+          y: dropY,
         }}
-        transition={
-          expanded
-            ? {
-                type: "spring",
-                stiffness: 300,
-                damping: settings.springBounciness ?? 26,
-                mass: 0.8,
-              }
-            : {
-                type: "spring",
-                stiffness: 310,
-                damping: (settings.springBounciness ?? 26) + 4,
-                mass: 0.8,
-              }
-        }
+        transition={{
+          width: expanded
+            ? { type: "spring", stiffness: 300, damping: settings.springBounciness ?? 26, mass: 0.8 }
+            : { type: "spring", stiffness: 310, damping: (settings.springBounciness ?? 26) + 4, mass: 0.8 },
+          height: expanded
+            ? { type: "spring", stiffness: 300, damping: settings.springBounciness ?? 26, mass: 0.8 }
+            : { type: "spring", stiffness: 310, damping: (settings.springBounciness ?? 26) + 4, mass: 0.8 },
+          borderRadius: expanded
+            ? { type: "spring", stiffness: 300, damping: settings.springBounciness ?? 26, mass: 0.8 }
+            : { type: "spring", stiffness: 310, damping: (settings.springBounciness ?? 26) + 4, mass: 0.8 },
+          y: dropY < 0
+            ? { duration: 0 }
+            : { type: "spring", stiffness: 340, damping: 20, mass: 0.7 },
+        }}
         onAnimationComplete={() => {
           if (!expandedRef.current && isTransitioningRef.current) {
             finishCollapse();
@@ -1290,7 +1362,7 @@ export default function App() {
                             : "No tasks yet"}
                         </span>
                       </div>
-                    ) : (
+                    ) : activeModule === "shelf" ? (
                       /* Shelf Collapsed Item */
                       <div className="flex items-center gap-2 min-w-0 flex-1">
                         <Layers
@@ -1304,6 +1376,22 @@ export default function App() {
                           }}
                         >
                           Quick Launch & File Shelf
+                        </span>
+                      </div>
+                    ) : (
+                      /* Performance Monitor Collapsed Item */
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <Activity
+                          className="w-3.5 h-3.5 shrink-0"
+                          style={{ color: settings.accentColor }}
+                        />
+                        <span
+                          className="truncate select-none font-medium text-neutral-300"
+                          style={{
+                            fontSize: `${12 * settings.fontSizeScale}px`,
+                          }}
+                        >
+                          System Performance
                         </span>
                       </div>
                     )}
@@ -1423,6 +1511,8 @@ export default function App() {
                       ? "To-Do List"
                       : activeModule === "shelf"
                       ? "Quick Shelf & Stash"
+                      : activeModule === "perf"
+                      ? "Performance HUD"
                       : expandedView === "queue"
                       ? "Queue / Playlist"
                       : expandedView === "lyrics"
@@ -1476,6 +1566,20 @@ export default function App() {
                       <span
                         className={`w-1.5 h-1.5 rounded-full transition-all ${
                           activeModule === "shelf"
+                            ? "bg-white scale-125 shadow-[0_0_6px_rgba(255,255,255,0.8)]"
+                            : "bg-neutral-600 hover:bg-neutral-400"
+                        }`}
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => switchModule("perf")}
+                      title="Performance HUD"
+                      className="p-1 rounded-full flex items-center justify-center transition-all cursor-pointer hover:bg-white/10"
+                    >
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full transition-all ${
+                          activeModule === "perf"
                             ? "bg-white scale-125 shadow-[0_0_6px_rgba(255,255,255,0.8)]"
                             : "bg-neutral-600 hover:bg-neutral-400"
                         }`}
@@ -1544,6 +1648,20 @@ export default function App() {
                     )}
                   </button>
 
+                  {/* Quick Monitor Switcher Button (when multiple displays are detected) */}
+                  {availableMonitors.length > 1 && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        cycleMonitor();
+                      }}
+                      title="Switch Notch to next monitor"
+                      className="text-neutral-400 hover:text-white p-1.5 rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
+                    >
+                      <Monitor className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+
                   {/* Settings Button */}
                   <button
                     onClick={handleOpenSettings}
@@ -1571,25 +1689,23 @@ export default function App() {
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (activeModule === "shelf") switchModule("todo");
-                    else if (activeModule === "todo") switchModule("media");
+                    switchModule(undefined, "prev");
                   }}
-                  title={activeModule === "shelf" ? "Switch to To-Do List" : "Switch to Media Player"}
+                  title="Previous Module"
                   className="absolute left-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-neutral-900/85 hover:bg-white/20 text-neutral-300 hover:text-white border border-white/10 transition-all shadow-xl z-30 active:scale-90"
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </button>
               )}
 
-              {activeModule !== "shelf" && (
+              {activeModule !== "perf" && (
                 <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (activeModule === "media") switchModule("todo");
-                    else if (activeModule === "todo") switchModule("shelf");
+                    switchModule(undefined, "next");
                   }}
-                  title={activeModule === "media" ? "Switch to To-Do List" : "Switch to Quick Shelf"}
+                  title="Next Module"
                   className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-neutral-900/85 hover:bg-white/20 text-neutral-300 hover:text-white border border-white/10 transition-all shadow-xl z-30 active:scale-90"
                 >
                   <ChevronRight className="w-4 h-4" />
@@ -1850,7 +1966,7 @@ export default function App() {
                 fontSizeScale={settings.fontSizeScale}
               />
             </motion.div>
-          ) : (
+          ) : activeModule === "shelf" ? (
             /* Quick Shelf & Stash Module */
             <motion.div
               key="shelf-module"
@@ -1863,6 +1979,21 @@ export default function App() {
               <Shelf
                 accentColor={settings.accentColor}
                 fontSizeScale={settings.fontSizeScale}
+              />
+            </motion.div>
+          ) : (
+            /* Performance Monitor Module */
+            <motion.div
+              key="perf-module"
+              initial={{ opacity: 0, x: 24 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 24 }}
+              transition={{ duration: 0.18 }}
+              className="h-full pt-1 pl-5 pr-3 pb-3.5"
+            >
+              <PerformanceHUD
+                isActive={expanded && activeModule === "perf"}
+                accentColor={settings.accentColor}
               />
             </motion.div>
           )}
