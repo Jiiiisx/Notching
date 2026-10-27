@@ -42,6 +42,11 @@ pub fn find_target_monitor(
         }
     }
 
+    // On Windows, the primary display is the one anchored at physical (0, 0)
+    if let Some(prim) = monitors.iter().find(|m| m.position().x == 0 && m.position().y == 0) {
+        return Some(prim.clone());
+    }
+
     if let Ok(Some(prim)) = window.primary_monitor() {
         return Some(prim);
     }
@@ -114,7 +119,7 @@ pub fn get_responsive_dimensions(
         1920.0
     };
 
-    let collapsed_width = (mon_width * 0.11).clamp(170.0, 240.0);
+    let collapsed_width = (mon_width * 0.125).clamp(220.0, 260.0);
     let collapsed_height = 36.0;
     let expanded_width = (mon_width * 0.24).clamp(400.0, 540.0);
     let expanded_height = 205.0;
@@ -129,8 +134,8 @@ pub fn get_responsive_dimensions(
     }
 }
 
-pub const NOTCH_CANVAS_WIDTH: f64 = 680.0;
-pub const NOTCH_CANVAS_HEIGHT: f64 = 350.0;
+pub const NOTCH_CANVAS_WIDTH: f64 = 760.0;
+pub const NOTCH_CANVAS_HEIGHT: f64 = 400.0;
 
 pub fn setup_notch_window(window: &WebviewWindow) {
     if let Ok(hwnd) = window.hwnd() {

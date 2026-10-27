@@ -8,13 +8,17 @@ import {
   SkipBack,
   SkipForward,
   Music2,
-  Clock,
   Sparkles,
   ChevronUp,
+  ChevronLeft,
+  ChevronRight,
+  ListTodo,
   Mic2,
   ListMusic,
   Settings,
+  Zap,
 } from "lucide-react";
+import { TodoList, TodoItem } from "./TodoList";
 import {
   NotchSettings,
   loadSettings,
@@ -22,6 +26,12 @@ import {
   hexToRgba,
 } from "./settings";
 import "./App.css";
+
+interface BatteryInfo {
+  has_battery: boolean;
+  percent: number;
+  is_charging: boolean;
+}
 
 interface QueueTrack {
   title: string;
@@ -116,7 +126,102 @@ export default function App() {
   const [lyricsLoading, setLyricsLoading] = useState(false);
   const lastFetchedTrackRef = useRef<string>("");
 
+  const [activeModule, setActiveModule] = useState<"media" | "todo">(() => {
+    return (localStorage.getItem("notch_active_module") as "media" | "todo") || "media";
+  });
+
+  const [todos, setTodos] = useState<TodoItem[]>(() => {
+    try {
+      const saved = localStorage.getItem("notch_todos");
+      return saved ? JSON.parse(saved) : [
+        { id: "1", text: "Welcome to Notch Tasks", completed: false, createdAt: Date.now() },
+        { id: "2", text: "Click to toggle completion", completed: true, createdAt: Date.now() - 1000 },
+      ];
+    } catch {
+      return [
+        { id: "1", text: "Welcome to Notch Tasks", completed: false, createdAt: Date.now() },
+        { id: "2", text: "Click to toggle completion", completed: true, createdAt: Date.now() - 1000 },
+      ];
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem("notch_todos", JSON.stringify(todos));
+  }, [todos]);
+
+  useEffect(() => {
+    localStorage.setItem("notch_active_module", activeModule);
+  }, [activeModule]);
+
+  const firstPendingTodo = useMemo(() => {
+    return todos.find((t) => !t.completed);
+  }, [todos]);
+
+  const handleToggleTodo = (id: string) => {
+    setTodos((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, completed: !t.completed } : t))
+    );
+  };
+
+  const handleAddTodo = (text: string) => {
+    const newItem: TodoItem = {
+      id: Date.now().toString(),
+      text,
+      completed: false,
+      createdAt: Date.now(),
+    };
+    setTodos((prev) => [...prev, newItem]);
+  };
+
+  const handleDeleteTodo = (id: string) => {
+    setTodos((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  const handleClearCompletedTodos = () => {
+    setTodos((prev) => prev.filter((t) => !t.completed));
+  };
+
+  const switchModule = (target?: "media" | "todo") => {
+    const next = target ?? (activeModule === "media" ? "todo" : "media");
+    setActiveModule(next);
+  };
+
+  const lastWheelTimeRef = useRef(0);
+  const handleContainerWheel = (e: React.WheelEvent) => {
+    const now = Date.now();
+    if (now - lastWheelTimeRef.current < 240) return;
+
+    if (!expandedRef.current) {
+      if (Math.abs(e.deltaX) > 10 || Math.abs(e.deltaY) > 10) {
+        lastWheelTimeRef.current = now;
+        switchModule();
+      }
+    } else {
+      if (Math.abs(e.deltaX) > 15) {
+        lastWheelTimeRef.current = now;
+        if (e.deltaX > 0) switchModule("todo");
+        else switchModule("media");
+        return;
+      }
+
+      if (activeModule === "media") {
+        if (Math.abs(e.deltaY) > 15) {
+          lastWheelTimeRef.current = now;
+          switchModule("todo");
+        }
+      } else if (activeModule === "todo") {
+        const target = e.target as HTMLElement;
+        const isScrollable = target.closest(".todo-list-scroll");
+        if (!isScrollable || e.deltaY < -20) {
+          lastWheelTimeRef.current = now;
+          switchModule("media");
+        }
+      }
+    }
+  };
+
   const [time, setTime] = useState("");
+  const [battery, setBattery] = useState<BatteryInfo | null>(null);
   const collapseTimerRef = useRef<number | null>(null);
   const collapseSafetyTimerRef = useRef<number | null>(null);
   const isTransitioningRef = useRef(false);
@@ -142,40 +247,11 @@ export default function App() {
       .catch((err) => console.error("Failed to load dimensions:", err));
   }, [settings.targetMonitor]);
 
-  // Zero-Resize Architecture: Notify Rust about current pill geometry for click-through hit-testing
-  const updateGeometry = (
-    isExp: boolean,
-    customWidth?: number,
-    customHeight?: number
-  ) => {
-    const activeWidth =
-      customWidth ??
-      (isExp
-        ? dims.expanded_width
-        : isCompact
-        ? 114
-        : dynamicCollapsedWidth);
-    const activeHeight =
-      customHeight ??
-      (isExp
-        ? expandedView !== "player"
-          ? dims.lyrics_height
-          : dims.expanded_height
-        : isCompact
-        ? 22
-        : dims.collapsed_height);
-    invoke("update_notch_geometry", {
-      isExpanded: isExp,
-      width: Math.ceil(activeWidth),
-      height: Math.ceil(activeHeight),
-    }).catch(() => {});
-  };
-
   // Immediate reposition when target monitor changes in settings
   useEffect(() => {
     invoke("set_notch_size", {
-      width: 680,
-      height: 350,
+      width: 760,
+      height: 400,
       targetMonitor: settings.targetMonitor ?? "primary",
     }).catch(() => {});
   }, [settings.targetMonitor]);
@@ -246,7 +322,6 @@ export default function App() {
     if (!expandedRef.current) {
       isTransitioningRef.current = true;
       expandedRef.current = true;
-      updateGeometry(true);
       setExpanded(true);
     }
   };
@@ -296,6 +371,7 @@ export default function App() {
   // Switch between expanded views
   const switchView = (e: React.MouseEvent, view: "player" | "lyrics" | "queue") => {
     e.stopPropagation();
+    setActiveModule("media");
     setExpandedView(view);
     if (expandedRef.current) {
       updateGeometry(true, dims.expanded_width, view !== "player" ? dims.lyrics_height : dims.expanded_height);
@@ -316,17 +392,31 @@ export default function App() {
     return `${m}:${s < 10 ? "0" : ""}${s}`;
   };
 
-  // Clock ticker
+  // Clock ticker - clean standard HH:mm with tabular numerals
   useEffect(() => {
     const updateTime = () => {
       const now = new Date();
-      setTime(
-        now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-      );
+      const hours = String(now.getHours()).padStart(2, "0");
+      const minutes = String(now.getMinutes()).padStart(2, "0");
+      setTime(`${hours}:${minutes}`);
     };
     updateTime();
     const interval = setInterval(updateTime, 1000);
     return () => clearInterval(interval);
+  }, []);
+
+  // Real-time battery status synchronization
+  useEffect(() => {
+    invoke<BatteryInfo>("get_battery_info")
+      .then((info) => setBattery(info))
+      .catch(() => {});
+
+    const unlistenPromise = listen<BatteryInfo>("battery-status", (event) => {
+      setBattery(event.payload);
+    });
+    return () => {
+      unlistenPromise.then((fn) => fn());
+    };
   }, []);
 
   // Synchronize notch customization settings
@@ -522,7 +612,7 @@ export default function App() {
     }
     if (showLyrics && currentLyricText) {
       const charWidth = 7.6 * (settings.fontSizeScale ?? 1.0);
-      const basePadding = 125; // equalizer + clock + internal margins
+      const basePadding = battery?.has_battery ? 155 : 125;
       const calculated = currentLyricText.length * charWidth + basePadding;
       const maxWidth = Math.min(dims.expanded_width * 1.5, 640);
       return Math.min(
@@ -531,20 +621,56 @@ export default function App() {
       );
     }
     return dims.collapsed_width;
-  }, [isCompact, showLyrics, currentLyricText, dims.collapsed_width, dims.expanded_width, settings.fontSizeScale]);
+  }, [isCompact, showLyrics, currentLyricText, dims.collapsed_width, dims.expanded_width, settings.fontSizeScale, battery?.has_battery]);
 
   // Track text overflow for continuous marquee if lyric exceeds max width
   const lyricOverflowInfo = useMemo(() => {
     if (!currentLyricText) return { isOverflowing: false, distance: 0 };
     const charWidth = 7.6 * (settings.fontSizeScale ?? 1.0);
     const estimatedTextWidth = currentLyricText.length * charWidth;
-    const availableWidth = dynamicCollapsedWidth - 125;
+    const basePadding = battery?.has_battery ? 155 : 125;
+    const availableWidth = dynamicCollapsedWidth - basePadding;
     const distance = Math.max(0, estimatedTextWidth - availableWidth);
     return {
       isOverflowing: distance > 8,
       distance: Math.ceil(distance),
     };
-  }, [currentLyricText, dynamicCollapsedWidth, settings.fontSizeScale]);
+  }, [currentLyricText, dynamicCollapsedWidth, settings.fontSizeScale, battery?.has_battery]);
+
+  // Distinct width & height per view module: expanded widths and heights can differ freely
+  const targetWidth = useMemo(() => {
+    if (!expanded) return isCompact ? 114 : dynamicCollapsedWidth;
+    if (activeModule === "todo") return 520;
+    if (expandedView === "lyrics" || expandedView === "queue") return 480;
+    return 460;
+  }, [expanded, isCompact, dynamicCollapsedWidth, activeModule, expandedView]);
+
+  const targetHeight = useMemo(() => {
+    if (!expanded) return isCompact ? 22 : dims.collapsed_height;
+    if (activeModule === "todo") return 290;
+    if (expandedView === "lyrics" || expandedView === "queue") return 320;
+    return 210;
+  }, [expanded, isCompact, dims.collapsed_height, activeModule, expandedView]);
+
+  // Zero-Resize Architecture: Notify Rust about current pill geometry for click-through hit-testing
+  const updateGeometry = (
+    isExp: boolean,
+    customWidth?: number,
+    customHeight?: number
+  ) => {
+    const activeWidth = customWidth ?? targetWidth;
+    const activeHeight = customHeight ?? targetHeight;
+    invoke("update_notch_geometry", {
+      isExpanded: isExp,
+      width: Math.ceil(activeWidth),
+      height: Math.ceil(activeHeight),
+    }).catch(() => {});
+  };
+
+  // Keep hit-test bounding box strictly in sync whenever target dimensions change
+  useEffect(() => {
+    updateGeometry(expanded, targetWidth, targetHeight);
+  }, [expanded, targetWidth, targetHeight]);
 
   // Update geometry whenever dynamicCollapsedWidth changes (not animating)
   useEffect(() => {
@@ -595,14 +721,6 @@ export default function App() {
     }
   };
 
-  const targetHeight = expanded
-    ? expandedView !== "player"
-      ? dims.lyrics_height
-      : dims.expanded_height
-    : isCompact
-    ? 22
-    : dims.collapsed_height;
-
   const targetBorderRadius = isCompact
     ? "0px 0px 11px 11px"
     : `0px 0px ${settings.borderRadius}px ${settings.borderRadius}px`;
@@ -618,9 +736,10 @@ export default function App() {
     >
       <motion.div
         ref={notchRef}
+        onWheel={handleContainerWheel}
         initial={false}
         animate={{
-          width: expanded ? dims.expanded_width : dynamicCollapsedWidth,
+          width: targetWidth,
           height: targetHeight,
           borderRadius: targetBorderRadius,
         }}
@@ -660,7 +779,7 @@ export default function App() {
           saveSettings(updated);
           emit("notch-settings-update", updated).catch(() => {});
         }}
-        className={`relative ${
+        className={`group relative ${
           expanded
             ? "shadow-[0_16px_36px_rgba(0,0,0,0.85)]"
             : "shadow-[0_2px_8px_rgba(0,0,0,0.4)]"
@@ -716,96 +835,234 @@ export default function App() {
                       <span className="w-1.5 h-1.5 rounded-full bg-neutral-500/80" />
                     )}
                   </div>
-                  <span className="text-[10px] font-mono tracking-tight text-neutral-300">
-                    {time}
-                  </span>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {battery && battery.has_battery && (
+                      <div className="flex items-center gap-0.5">
+                        {battery.is_charging && (
+                          <Zap className="w-2 h-2 text-emerald-400 fill-emerald-400" />
+                        )}
+                        <span
+                          className={`font-mono text-[9px] tabular-nums font-medium ${
+                            battery.is_charging
+                              ? "text-emerald-400"
+                              : battery.percent <= 20
+                              ? "text-rose-400"
+                              : "text-neutral-400"
+                          }`}
+                          style={{ fontSize: `${9 * settings.fontSizeScale}px` }}
+                        >
+                          {battery.percent}%
+                        </span>
+                      </div>
+                    )}
+                    <span className="text-[10px] font-mono font-semibold tracking-tight text-neutral-200 tabular-nums">
+                      {time}
+                    </span>
+                  </div>
                 </div>
               ) : (
                 /* Normal Collapsed View */
                 <>
                   <div className="flex items-center gap-2 overflow-hidden flex-1 min-w-0 mr-2">
-                    {media.has_media && media.is_playing ? (
-                      <div className="flex items-end gap-[2px] h-3.5 shrink-0 px-0.5">
-                        <motion.span
-                          animate={{ height: ["4px", "12px", "6px", "14px", "4px"] }}
-                          transition={{ repeat: Infinity, duration: 1.2, ease: "easeInOut" }}
-                          className="w-[2.5px] rounded-full"
-                          style={{ backgroundColor: settings.accentColor }}
-                        />
-                        <motion.span
-                          animate={{ height: ["8px", "4px", "14px", "6px", "8px"] }}
-                          transition={{ repeat: Infinity, duration: 1.0, ease: "easeInOut", delay: 0.15 }}
-                          className="w-[2.5px] rounded-full"
-                          style={{ backgroundColor: settings.accentColor }}
-                        />
-                        <motion.span
-                          animate={{ height: ["12px", "6px", "4px", "14px", "12px"] }}
-                          transition={{ repeat: Infinity, duration: 1.1, ease: "easeInOut", delay: 0.3 }}
-                          className="w-[2.5px] rounded-full"
-                          style={{ backgroundColor: settings.accentColor }}
-                        />
-                      </div>
-                    ) : (
-                      <Music2 className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
-                    )}
+                    {activeModule === "media" ? (
+                      <>
+                        {media.has_media && media.is_playing ? (
+                          <div className="flex items-end gap-[2px] h-3.5 shrink-0 px-0.5">
+                            <motion.span
+                              animate={{ height: ["4px", "12px", "6px", "14px", "4px"] }}
+                              transition={{ repeat: Infinity, duration: 1.2, ease: "easeInOut" }}
+                              className="w-[2.5px] rounded-full"
+                              style={{ backgroundColor: settings.accentColor }}
+                            />
+                            <motion.span
+                              animate={{ height: ["8px", "4px", "14px", "6px", "8px"] }}
+                              transition={{ repeat: Infinity, duration: 1.0, ease: "easeInOut", delay: 0.15 }}
+                              className="w-[2.5px] rounded-full"
+                              style={{ backgroundColor: settings.accentColor }}
+                            />
+                            <motion.span
+                              animate={{ height: ["12px", "6px", "4px", "14px", "12px"] }}
+                              transition={{ repeat: Infinity, duration: 1.1, ease: "easeInOut", delay: 0.3 }}
+                              className="w-[2.5px] rounded-full"
+                              style={{ backgroundColor: settings.accentColor }}
+                            />
+                          </div>
+                        ) : (
+                          <Music2 className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                        )}
 
-                    {showLyrics && currentLyricText ? (
-                      <AnimatePresence mode="popLayout" initial={false}>
-                        <motion.span
-                          key={currentLyricText}
-                          initial={{ opacity: 0, y: 10, filter: "blur(4px)" }}
-                          animate={{
-                            opacity: 1,
-                            y: 0,
-                            filter: "blur(0px)",
-                            x: lyricOverflowInfo.isOverflowing
-                              ? [0, 0, -lyricOverflowInfo.distance, -lyricOverflowInfo.distance, 0]
-                              : 0,
-                          }}
-                          exit={{ opacity: 0, y: -10, filter: "blur(4px)" }}
-                          transition={{
-                            type: "spring",
-                            stiffness: 380,
-                            damping: 28,
-                            opacity: { duration: 0.2 },
-                            x: lyricOverflowInfo.isOverflowing
-                              ? {
-                                  duration: Math.max(3.8, lyricOverflowInfo.distance / 18),
-                                  times: [0, 0.22, 0.65, 0.85, 1],
-                                  repeat: Infinity,
-                                  repeatDelay: 1.2,
-                                  ease: "easeInOut",
-                                }
-                              : undefined,
-                          }}
-                          className="select-none inline-block whitespace-nowrap"
+                        {showLyrics && currentLyricText ? (
+                          <AnimatePresence mode="popLayout" initial={false}>
+                            <motion.span
+                              key={currentLyricText}
+                              initial={{ opacity: 0, y: 10, filter: "blur(4px)" }}
+                              animate={{
+                                opacity: 1,
+                                y: 0,
+                                filter: "blur(0px)",
+                                x: lyricOverflowInfo.isOverflowing
+                                  ? [0, 0, -lyricOverflowInfo.distance, -lyricOverflowInfo.distance, 0]
+                                  : 0,
+                              }}
+                              exit={{ opacity: 0, y: -10, filter: "blur(4px)" }}
+                              transition={{
+                                type: "spring",
+                                stiffness: 380,
+                                damping: 28,
+                                opacity: { duration: 0.2 },
+                                x: lyricOverflowInfo.isOverflowing
+                                  ? {
+                                      duration: Math.max(3.8, lyricOverflowInfo.distance / 18),
+                                      times: [0, 0.22, 0.65, 0.85, 1],
+                                      repeat: Infinity,
+                                      repeatDelay: 1.2,
+                                      ease: "easeInOut",
+                                    }
+                                  : undefined,
+                              }}
+                              className="select-none inline-block whitespace-nowrap"
+                              style={{
+                                color: settings.accentColor,
+                                fontWeight: Number(settings.fontWeight),
+                                fontSize: `${12 * settings.fontSizeScale}px`,
+                              }}
+                            >
+                              {currentLyricText}
+                            </motion.span>
+                          </AnimatePresence>
+                        ) : (
+                          <span
+                            className="truncate select-none"
+                            style={{
+                              color: settings.textColor,
+                              fontWeight: Number(settings.fontWeight),
+                              fontSize: `${12 * settings.fontSizeScale}px`,
+                            }}
+                          >
+                            {media.has_media ? media.title : "Notch"}
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      /* Todo Collapsed Item */
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <ListTodo
+                          className="w-3.5 h-3.5 shrink-0"
+                          style={{ color: settings.accentColor }}
+                        />
+                        <span
+                          className="truncate select-none font-medium"
                           style={{
-                            color: settings.accentColor,
-                            fontWeight: Number(settings.fontWeight),
+                            color: firstPendingTodo ? settings.textColor : "#9ca3af",
                             fontSize: `${12 * settings.fontSizeScale}px`,
                           }}
                         >
-                          {currentLyricText}
-                        </motion.span>
-                      </AnimatePresence>
-                    ) : (
-                      <span
-                        className="truncate select-none"
-                        style={{
-                          color: settings.textColor,
-                          fontWeight: Number(settings.fontWeight),
-                          fontSize: `${12 * settings.fontSizeScale}px`,
-                        }}
-                      >
-                        {media.has_media ? media.title : "Notch"}
-                      </span>
+                          {firstPendingTodo
+                            ? firstPendingTodo.text
+                            : todos.length > 0
+                            ? "All tasks completed!"
+                            : "No tasks yet"}
+                        </span>
+                      </div>
                     )}
                   </div>
 
-                  <div className="flex items-center gap-1.5 text-neutral-400 shrink-0">
-                    <Clock className="w-3 h-3 text-neutral-500" />
+                  {/* Hover Quick Module Carousel Switcher */}
+                  <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 mr-1.5 z-10">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        switchModule("media");
+                      }}
+                      title="Media Player"
+                      className={`p-0.5 rounded hover:bg-white/10 transition-colors ${
+                        activeModule === "media" ? "text-white" : "text-neutral-500 hover:text-neutral-300"
+                      }`}
+                    >
+                      <ChevronLeft className="w-2.5 h-2.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        switchModule("todo");
+                      }}
+                      title="To-Do List"
+                      className={`p-0.5 rounded hover:bg-white/10 transition-colors ${
+                        activeModule === "todo" ? "text-white" : "text-neutral-500 hover:text-neutral-300"
+                      }`}
+                    >
+                      <ChevronRight className="w-2.5 h-2.5" />
+                    </button>
+                  </div>
+
+                  {/* Right Status: Sleek Battery + Modern Digital Clock */}
+                  <div className="flex items-center gap-2 shrink-0 select-none">
+                    {battery && battery.has_battery && (
+                      <div
+                        className="flex items-center gap-1.5"
+                        title={`Battery: ${battery.percent}%${battery.is_charging ? " (Plugged In / Charging)" : ""}`}
+                      >
+                        {battery.is_charging && (
+                          <Zap className="w-2.5 h-2.5 text-emerald-400 fill-emerald-400 animate-pulse" />
+                        )}
+                        <span
+                          className={`font-mono text-[10px] tabular-nums font-medium ${
+                            battery.is_charging
+                              ? "text-emerald-400"
+                              : battery.percent <= 20
+                              ? "text-rose-400 font-semibold"
+                              : "text-neutral-300"
+                          }`}
+                          style={{ fontSize: `${10 * settings.fontSizeScale}px` }}
+                        >
+                          {battery.percent}%
+                        </span>
+                        {/* Apple-style Battery Capsule */}
+                        <div className="flex items-center">
+                          <div
+                            className={`w-[19px] h-[9.5px] rounded-[3px] border p-[1px] flex items-center ${
+                              battery.is_charging
+                                ? "border-emerald-500/80 bg-emerald-950/20"
+                                : battery.percent <= 20
+                                ? "border-rose-500/80 bg-rose-950/20"
+                                : "border-neutral-500/80 bg-white/5"
+                            }`}
+                          >
+                            <div
+                              className={`h-full rounded-[1.5px] transition-all duration-300 ${
+                                battery.is_charging
+                                  ? "bg-emerald-400"
+                                  : battery.percent <= 20
+                                  ? "bg-rose-400"
+                                  : "bg-neutral-200"
+                              }`}
+                              style={{
+                                width: `${Math.max(10, Math.min(100, battery.percent))}%`,
+                              }}
+                            />
+                          </div>
+                          {/* Battery Nipple */}
+                          <div
+                            className={`w-[1.5px] h-[4px] rounded-r-[0.5px] -ml-[0.5px] ${
+                              battery.is_charging
+                                ? "bg-emerald-500/80"
+                                : battery.percent <= 20
+                                ? "bg-rose-500/80"
+                                : "bg-neutral-500/80"
+                            }`}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {battery && battery.has_battery && (
+                      <span className="w-0.5 h-0.5 rounded-full bg-neutral-600/80" />
+                    )}
+
                     <span
-                      className="font-mono text-neutral-300"
+                      className="font-mono text-[11px] font-semibold tracking-tight text-neutral-200 tabular-nums"
                       style={{ fontSize: `${11 * settings.fontSizeScale}px` }}
                     >
                       {time}
@@ -823,16 +1080,23 @@ export default function App() {
               exit={{ opacity: 0, pointerEvents: "none" }}
               transition={{ duration: 0.2 }}
               style={{
-                width: dims.expanded_width,
-                height:
-                  expandedView !== "player"
-                    ? dims.lyrics_height
-                    : dims.expanded_height,
+                width: targetWidth,
+                height: targetHeight,
               }}
-              className="absolute top-0 left-1/2 -translate-x-1/2 flex flex-col justify-between p-4 pb-5 overflow-hidden"
+              className="w-full h-full relative group/expanded flex flex-col justify-between p-4 pb-4 overflow-hidden"
             >
               {/* Header Bar */}
-              <div className="flex items-center justify-between pb-2 border-b border-white/5">
+              <div
+                onWheel={(e) => {
+                  const now = Date.now();
+                  if (now - lastWheelTimeRef.current < 260) return;
+                  if (Math.abs(e.deltaX) > 10 || Math.abs(e.deltaY) > 10) {
+                    lastWheelTimeRef.current = now;
+                    switchModule();
+                  }
+                }}
+                className="flex items-center justify-between pb-2 border-b border-white/5"
+              >
                 <div className="flex items-center gap-2">
                   <span
                     className="w-2 h-2 rounded-full"
@@ -842,17 +1106,48 @@ export default function App() {
                     }}
                   />
                   <span className="text-[11px] font-mono tracking-wider text-neutral-400 uppercase">
-                    {expandedView === "queue"
+                    {activeModule === "todo"
+                      ? "To-Do List"
+                      : expandedView === "queue"
                       ? "Queue / Playlist"
                       : expandedView === "lyrics"
                       ? "Synchronized Lyrics"
                       : "Media Active"}
                   </span>
+                  {activeModule === "todo" && (
+                    <span className="px-1.5 py-0.5 rounded bg-white/10 text-[10px] font-mono text-neutral-300">
+                      {todos.filter((t) => t.completed).length}/{todos.length} done
+                    </span>
+                  )}
                 </div>
 
-                <div className="flex items-center gap-1">
-                  {/* View Switcher: Player, Lyrics, Queue */}
-                  {media.has_media && (
+                <div className="flex items-center gap-1.5">
+                  {/* Module Page Indicator: Dots only without top arrows */}
+                  <div className="flex items-center gap-1.5 px-2 py-1 bg-white/5 rounded-full border border-white/5">
+                    <button
+                      type="button"
+                      onClick={() => switchModule("media")}
+                      title="Media Player"
+                      className={`w-1.5 h-1.5 rounded-full transition-all ${
+                        activeModule === "media"
+                          ? "bg-white scale-125 shadow-[0_0_6px_rgba(255,255,255,0.8)]"
+                          : "bg-neutral-600 hover:bg-neutral-400"
+                      }`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => switchModule("todo")}
+                      title="To-Do List"
+                      className={`w-1.5 h-1.5 rounded-full transition-all ${
+                        activeModule === "todo"
+                          ? "bg-white scale-125 shadow-[0_0_6px_rgba(255,255,255,0.8)]"
+                          : "bg-neutral-600 hover:bg-neutral-400"
+                      }`}
+                    />
+                  </div>
+
+                  {/* View Switcher: Player, Lyrics, Queue (Only in media module) */}
+                  {activeModule === "media" && media.has_media && (
                     <div className="flex items-center bg-white/5 rounded-lg p-0.5 border border-white/5">
                       <button
                         onClick={(e) => switchView(e, "player")}
@@ -913,7 +1208,48 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Middle Section: Player OR Lyrics OR Queue */}
+              {/* Floating Side Arrows for Next/Prev Module */}
+              {activeModule === "todo" && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    switchModule("media");
+                  }}
+                  title="Switch to Media Player"
+                  className="absolute left-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-neutral-900/85 hover:bg-white/20 text-neutral-300 hover:text-white border border-white/10 transition-all shadow-xl z-30 active:scale-90"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+              )}
+
+              {activeModule === "media" && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    switchModule("todo");
+                  }}
+                  title="Switch to To-Do List"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-neutral-900/85 hover:bg-white/20 text-neutral-300 hover:text-white border border-white/10 transition-all shadow-xl z-30 active:scale-90"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              )}
+
+              {/* Carousel Content Container */}
+              <div className="flex-1 overflow-hidden relative pt-1">
+                <AnimatePresence mode="wait" initial={false}>
+                  {activeModule === "media" ? (
+                    <motion.div
+                      key="media-module"
+                      initial={{ opacity: 0, x: -24 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: -24 }}
+                      transition={{ duration: 0.18 }}
+                      className="h-full flex flex-col justify-between pr-5 pl-1"
+                    >
+                      {/* Middle Section: Player OR Lyrics OR Queue */}
               {expandedView === "player" ? (
                 <>
                   <div className="flex items-center gap-3.5 py-1.5">
@@ -1115,7 +1451,31 @@ export default function App() {
                 </button>
               </div>
             </motion.div>
+          ) : (
+            /* To-Do List Module */
+            <motion.div
+              key="todo-module"
+              initial={{ opacity: 0, x: 24 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 24 }}
+              transition={{ duration: 0.18 }}
+              className="h-full pt-1 pl-5 pr-2"
+            >
+              <TodoList
+                todos={todos}
+                onToggle={handleToggleTodo}
+                onAdd={handleAddTodo}
+                onDelete={handleDeleteTodo}
+                onClearCompleted={handleClearCompletedTodos}
+                accentColor={settings.accentColor}
+                fontSizeScale={settings.fontSizeScale}
+              />
+            </motion.div>
           )}
+        </AnimatePresence>
+      </div>
+    </motion.div>
+  )}
         </AnimatePresence>
       </motion.div>
     </div>

@@ -34,15 +34,14 @@ fn get_notch_config(
 }
 
 #[tauri::command]
-fn set_notch_state(app: AppHandle, expanded: bool, target_monitor: Option<String>) {
+fn set_notch_state(app: AppHandle, _expanded: bool, target_monitor: Option<String>) {
     if let Some(window) = app.get_webview_window("main") {
-        let dims = window_helper::get_responsive_dimensions(&window, target_monitor.as_deref());
-        let (w, h) = if expanded {
-            (dims.expanded_width, dims.expanded_height)
-        } else {
-            (dims.collapsed_width, dims.collapsed_height)
-        };
-        window_helper::reposition_notch(&window, w, h, target_monitor.as_deref());
+        window_helper::reposition_notch(
+            &window,
+            window_helper::NOTCH_CANVAS_WIDTH,
+            window_helper::NOTCH_CANVAS_HEIGHT,
+            target_monitor.as_deref(),
+        );
     }
 }
 
