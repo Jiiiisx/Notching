@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, emit } from "@tauri-apps/api/event";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Play,
@@ -12,8 +12,25 @@ import {
   Sparkles,
   ChevronUp,
   Mic2,
+  ListMusic,
+  Settings,
 } from "lucide-react";
+import {
+  NotchSettings,
+  loadSettings,
+  saveSettings,
+  hexToRgba,
+} from "./settings";
 import "./App.css";
+
+interface QueueTrack {
+  title: string;
+  artist: string;
+  album: string;
+  duration_ms: number;
+  uri: string;
+  image_url: string;
+}
 
 interface MediaTrack {
   title: string;
@@ -67,8 +84,11 @@ function formatTime(sec: number): string {
 }
 
 export default function App() {
+  const [settings, setSettings] = useState<NotchSettings>(loadSettings);
   const [expanded, setExpanded] = useState(false);
-  const [showLyrics, setShowLyrics] = useState(false);
+  const [expandedView, setExpandedView] = useState<"player" | "lyrics" | "queue">("player");
+  const [showLyrics] = useState(true);
+  const [queue, setQueue] = useState<QueueTrack[]>([]);
   const [dims, setDims] = useState<NotchDimensions>({
     collapsed_width: 190,
     collapsed_height: 36,
@@ -98,40 +118,78 @@ export default function App() {
 
   const [time, setTime] = useState("");
   const collapseTimerRef = useRef<number | null>(null);
+  const collapseSafetyTimerRef = useRef<number | null>(null);
   const isTransitioningRef = useRef(false);
+  const expandedRef = useRef(false);
   const notchRef = useRef<HTMLDivElement | null>(null);
   const lyricsContainerRef = useRef<HTMLDivElement | null>(null);
+  const [isSmartCompact, setIsSmartCompact] = useState(false);
+
+  useEffect(() => {
+    expandedRef.current = expanded;
+  }, [expanded]);
+
+  const isCompact = !expanded && (Boolean(settings.compactMode) || (Boolean(settings.smartTabAvoidance ?? true) && isSmartCompact));
 
   // Load responsive dimensions from Rust based on active monitor
   useEffect(() => {
-    invoke<NotchDimensions>("get_notch_config")
+    invoke<NotchDimensions>("get_notch_config", {
+      targetMonitor: settings.targetMonitor ?? "primary",
+    })
       .then((cfg) => {
         if (cfg) setDims(cfg);
       })
       .catch((err) => console.error("Failed to load dimensions:", err));
-  }, []);
+  }, [settings.targetMonitor]);
 
-  // Synchronize native window dimensions dynamically with margin buffer
+  // Synchronize native window dimensions dynamically, ensuring canvas is always wider than the notch
   const updateNativeWindow = async (
     isExp: boolean,
     lyricsMode: boolean,
-    customWidth?: number
+    customWidth?: number,
+    monitorId?: string
   ) => {
+    const activeWidth = customWidth ?? (isExp ? dims.expanded_width : isCompact ? 114 : dynamicCollapsedWidth);
     const width = isExp
-      ? dims.expanded_width + 16
-      : (customWidth ?? dynamicCollapsedWidth) + 16;
+      ? Math.max(dims.expanded_width + 16, Math.ceil(activeWidth + 24))
+      : Math.ceil(activeWidth + 12);
     const height = isExp
       ? lyricsMode
         ? dims.lyrics_height + 12
         : dims.expanded_height + 12
+      : isCompact
+      ? 24
       : dims.collapsed_height;
     try {
       await invoke("set_notch_size", {
         width: Math.ceil(width),
         height: Math.ceil(height),
+        targetMonitor: monitorId ?? settings.targetMonitor ?? "primary",
       });
     } catch {}
   };
+
+  // Immediate reposition when target monitor changes in settings
+  useEffect(() => {
+    updateNativeWindow(expanded, showLyrics, undefined, settings.targetMonitor);
+  }, [settings.targetMonitor]);
+
+  // Listen to smart avoidance updates from Rust detector
+  useEffect(() => {
+    const unlistenPromise = listen<{ compact: boolean }>("smart-avoidance-status", (event) => {
+      setIsSmartCompact(event.payload.compact);
+    });
+    return () => {
+      unlistenPromise.then((fn) => fn());
+    };
+  }, []);
+
+  // Update native window when compact state toggles while collapsed (not animating)
+  useEffect(() => {
+    if (!expandedRef.current && !isTransitioningRef.current) {
+      updateNativeWindow(false, showLyrics);
+    }
+  }, [isCompact, showLyrics]);
 
   const isInsideNotch = (clientX: number, clientY: number): boolean => {
     if (!notchRef.current) return false;
@@ -149,21 +207,48 @@ export default function App() {
       clearTimeout(collapseTimerRef.current);
       collapseTimerRef.current = null;
     }
+    if (collapseSafetyTimerRef.current) {
+      clearTimeout(collapseSafetyTimerRef.current);
+      collapseSafetyTimerRef.current = null;
+    }
   };
 
-  const scheduleCollapse = (delay = 250) => {
+  const finishCollapse = () => {
+    if (collapseSafetyTimerRef.current) {
+      clearTimeout(collapseSafetyTimerRef.current);
+      collapseSafetyTimerRef.current = null;
+    }
+    // Post-Transition double RAF Guard: wait for WebView2 to finish rasterizing & presenting
+    // the collapsed frame to DWM before shrinking native window canvas bounds
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (!expandedRef.current) {
+          isTransitioningRef.current = false;
+          updateNativeWindow(false, showLyrics, dynamicCollapsedWidth);
+        }
+      });
+    });
+  };
+
+  const scheduleCollapse = (delay = 200) => {
     cancelCollapse();
     collapseTimerRef.current = window.setTimeout(() => {
       isTransitioningRef.current = true;
+      expandedRef.current = false;
       setExpanded(false);
+      // Safety fallback only if animation complete event is dropped
+      collapseSafetyTimerRef.current = window.setTimeout(() => {
+        finishCollapse();
+      }, 1000);
     }, delay);
   };
 
   const handleMouseEnter = () => {
     cancelCollapse();
-    if (!expanded) {
+    if (!expandedRef.current) {
       isTransitioningRef.current = true;
-      updateNativeWindow(true, showLyrics);
+      expandedRef.current = true;
+      updateNativeWindow(true, expandedView !== "player");
       setExpanded(true);
     }
   };
@@ -171,8 +256,8 @@ export default function App() {
   const handleMouseMove = (e: React.MouseEvent) => {
     if (isInsideNotch(e.clientX, e.clientY)) {
       cancelCollapse();
-    } else if (expanded) {
-      scheduleCollapse(200);
+    } else if (expandedRef.current) {
+      scheduleCollapse(180);
     }
   };
 
@@ -180,22 +265,26 @@ export default function App() {
     if (isInsideNotch(e.clientX, e.clientY)) {
       return;
     }
-    if (expanded) {
-      scheduleCollapse(250);
+    if (expandedRef.current) {
+      scheduleCollapse(180);
     }
   };
 
   const handleManualCollapse = () => {
     cancelCollapse();
     isTransitioningRef.current = true;
+    expandedRef.current = false;
     setExpanded(false);
+    collapseSafetyTimerRef.current = window.setTimeout(() => {
+      finishCollapse();
+    }, 1000);
   };
 
   // Ensure notch collapses when cursor leaves the native window entirely
   useEffect(() => {
     const handleWindowLeave = () => {
-      if (expanded) {
-        scheduleCollapse(200);
+      if (expandedRef.current) {
+        scheduleCollapse(150);
       }
     };
     document.addEventListener("mouseleave", handleWindowLeave);
@@ -206,14 +295,27 @@ export default function App() {
     };
   }, [expanded]);
 
-  // Toggle lyrics view
-  const toggleLyricsMode = async (e: React.MouseEvent) => {
+  // Switch between expanded views
+  const switchView = async (e: React.MouseEvent, view: "player" | "lyrics" | "queue") => {
     e.stopPropagation();
-    const nextState = !showLyrics;
-    setShowLyrics(nextState);
+    setExpandedView(view);
     if (expanded) {
-      await updateNativeWindow(true, nextState);
+      await updateNativeWindow(true, view !== "player");
     }
+  };
+
+  const handleOpenSettings = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await invoke("open_settings");
+    } catch {}
+  };
+
+  const formatMs = (ms: number) => {
+    const totalSec = Math.floor(ms / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${m}:${s < 10 ? "0" : ""}${s}`;
   };
 
   // Clock ticker
@@ -228,6 +330,34 @@ export default function App() {
     const interval = setInterval(updateTime, 1000);
     return () => clearInterval(interval);
   }, []);
+
+  // Synchronize notch customization settings
+  useEffect(() => {
+    const unlistenPromise = listen<NotchSettings>("notch-settings-update", (event) => {
+      if (event.payload) {
+        setSettings(event.payload);
+      }
+    });
+
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === "notch_custom_settings" && e.newValue) {
+        try {
+          setSettings(JSON.parse(e.newValue));
+        } catch {}
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+
+    return () => {
+      unlistenPromise.then((fn) => fn());
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, []);
+
+  // Sync game mode detector state
+  useEffect(() => {
+    invoke("set_game_mode", { enabled: settings.gameModeAutoShift ?? true }).catch(() => {});
+  }, [settings.gameModeAutoShift]);
 
   // Media listener & initial fetch
   useEffect(() => {
@@ -251,8 +381,24 @@ export default function App() {
       });
     });
 
+    const unlistenQueuePromise = listen<any>(
+      "spotify-queue-update",
+      (event) => {
+        const payload = event.payload;
+        const tracks: QueueTrack[] = Array.isArray(payload)
+          ? payload
+          : Array.isArray(payload?.tracks)
+          ? payload.tracks
+          : [];
+        if (tracks.length > 0) {
+          setQueue(tracks);
+        }
+      }
+    );
+
     return () => {
       unlistenPromise.then((unlisten) => unlisten());
+      unlistenQueuePromise.then((unlisten) => unlisten());
     };
   }, []);
 
@@ -354,15 +500,15 @@ export default function App() {
   // Current active lyric line index with anticipatory lead
   const activeLyricIndex = useMemo(() => {
     if (lyrics.length === 0) return -1;
-    // Add 0.3s lead time to anticipate vocal onset
-    const syncPos = playbackPos + 0.3;
+    // Add customizable lead time to anticipate vocal onset
+    const syncPos = playbackPos + (settings.leadTime ?? 0.3);
     for (let i = lyrics.length - 1; i >= 0; i--) {
       if (syncPos >= lyrics[i].time) {
         return i;
       }
     }
     return 0;
-  }, [lyrics, playbackPos]);
+  }, [lyrics, playbackPos, settings.leadTime]);
 
   const currentLyricText = useMemo(() => {
     if (lyrics.length > 0 && activeLyricIndex >= 0) {
@@ -371,23 +517,40 @@ export default function App() {
     return "";
   }, [lyrics, activeLyricIndex]);
 
-  // Dynamic width when collapsed based on lyric length
+  // Dynamic width when collapsed based on lyric length with adaptive font scaling
   const dynamicCollapsedWidth = useMemo(() => {
+    if (isCompact) {
+      return 114;
+    }
     if (showLyrics && currentLyricText) {
-      const charWidth = 8.5;
-      const basePadding = 115; // equalizer + clock + internal padding
+      const charWidth = 7.6 * (settings.fontSizeScale ?? 1.0);
+      const basePadding = 125; // equalizer + clock + internal margins
       const calculated = currentLyricText.length * charWidth + basePadding;
+      const maxWidth = Math.min(dims.expanded_width * 1.5, 640);
       return Math.min(
-        dims.expanded_width * 1.35,
+        maxWidth,
         Math.max(dims.collapsed_width, calculated)
       );
     }
     return dims.collapsed_width;
-  }, [showLyrics, currentLyricText, dims.collapsed_width, dims.expanded_width]);
+  }, [isCompact, showLyrics, currentLyricText, dims.collapsed_width, dims.expanded_width, settings.fontSizeScale]);
 
-  // Keep native window size synced with dynamic collapsed lyric width only when stably collapsed
+  // Track text overflow for continuous marquee if lyric exceeds max width
+  const lyricOverflowInfo = useMemo(() => {
+    if (!currentLyricText) return { isOverflowing: false, distance: 0 };
+    const charWidth = 7.6 * (settings.fontSizeScale ?? 1.0);
+    const estimatedTextWidth = currentLyricText.length * charWidth;
+    const availableWidth = dynamicCollapsedWidth - 125;
+    const distance = Math.max(0, estimatedTextWidth - availableWidth);
+    return {
+      isOverflowing: distance > 8,
+      distance: Math.ceil(distance),
+    };
+  }, [currentLyricText, dynamicCollapsedWidth, settings.fontSizeScale]);
+
+  // Keep native window canvas wide enough whenever dynamicCollapsedWidth changes (not animating)
   useEffect(() => {
-    if (!expanded && !isTransitioningRef.current) {
+    if (!expandedRef.current && !isTransitioningRef.current) {
       updateNativeWindow(false, showLyrics, dynamicCollapsedWidth);
     }
   }, [dynamicCollapsedWidth, showLyrics]);
@@ -435,16 +598,22 @@ export default function App() {
   };
 
   const targetHeight = expanded
-    ? showLyrics
+    ? expandedView !== "player"
       ? dims.lyrics_height
       : dims.expanded_height
+    : isCompact
+    ? 22
     : dims.collapsed_height;
+
+  const targetBorderRadius = isCompact
+    ? "0px 0px 11px 11px"
+    : `0px 0px ${settings.borderRadius}px ${settings.borderRadius}px`;
 
   return (
     <div
       className="w-full h-full flex flex-col items-center justify-start select-none overflow-hidden"
       onMouseMove={(e) => {
-        if (expanded && !isInsideNotch(e.clientX, e.clientY)) {
+        if (expandedRef.current && !isInsideNotch(e.clientX, e.clientY)) {
           scheduleCollapse(200);
         }
       }}
@@ -455,27 +624,28 @@ export default function App() {
         animate={{
           width: expanded ? dims.expanded_width : dynamicCollapsedWidth,
           height: targetHeight,
-          borderRadius: expanded ? "0px 0px 24px 24px" : "0px 0px 18px 18px",
+          borderRadius: targetBorderRadius,
         }}
         transition={
           expanded
             ? {
                 type: "spring",
                 stiffness: 300,
-                damping: 26,
+                damping: settings.springBounciness ?? 26,
                 mass: 0.8,
               }
             : {
                 type: "spring",
-                stiffness: 340,
-                damping: 36,
+                stiffness: 310,
+                damping: (settings.springBounciness ?? 26) + 4,
                 mass: 0.8,
               }
         }
         onAnimationComplete={() => {
-          isTransitioningRef.current = false;
-          if (!expanded) {
-            updateNativeWindow(false, showLyrics, dynamicCollapsedWidth);
+          if (!expandedRef.current && isTransitioningRef.current) {
+            finishCollapse();
+          } else {
+            isTransitioningRef.current = false;
           }
         }}
         onMouseEnter={handleMouseEnter}
@@ -484,73 +654,167 @@ export default function App() {
         onClick={() => {
           if (!expanded) handleMouseEnter();
         }}
-        className="relative bg-black/95 text-white border border-white/10 border-t-0 shadow-[0_16px_40px_rgba(0,0,0,0.9)] backdrop-blur-2xl cursor-pointer flex flex-col overflow-hidden mx-auto"
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          const nextCompact = !settings.compactMode;
+          const updated = { ...settings, compactMode: nextCompact };
+          setSettings(updated);
+          saveSettings(updated);
+          emit("notch-settings-update", updated).catch(() => {});
+        }}
+        className={`relative ${
+          expanded
+            ? "shadow-[0_16px_36px_rgba(0,0,0,0.85)]"
+            : "shadow-[0_2px_8px_rgba(0,0,0,0.4)]"
+        } backdrop-blur-2xl cursor-pointer flex flex-col overflow-hidden mx-auto transition-shadow duration-300`}
+        style={{
+          backgroundColor: hexToRgba(settings.bgColor, settings.bgOpacity),
+          borderColor: hexToRgba(settings.borderColor, settings.borderOpacity),
+          borderWidth: settings.borderOpacity > 0 ? "1px" : "0px",
+          borderTopWidth: "0px",
+          color: settings.textColor,
+          fontWeight: Number(settings.fontWeight),
+        }}
       >
         <AnimatePresence initial={false}>
           {!expanded ? (
-            /* Collapsed View */
+            /* Collapsed View - Anchored strictly to top to prevent vertical slide jitter */
             <motion.div
               key="collapsed"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0, pointerEvents: "none" }}
-              transition={{ duration: 0.16 }}
-              className="absolute inset-0 flex items-center justify-between px-3.5 py-1.5"
+              transition={{ duration: 0.18 }}
+              className={`absolute top-0 left-0 right-0 flex items-center justify-between ${
+                isCompact ? "h-[22px] px-2.5 py-0.5" : "h-[36px] px-3.5 py-1.5"
+              }`}
             >
-              <div className="flex items-center gap-2 overflow-hidden flex-1 min-w-0 mr-2">
-                {media.has_media && media.is_playing ? (
-                  <div className="flex items-end gap-[2px] h-3.5 shrink-0 px-0.5">
-                    <motion.span
-                      animate={{ height: ["4px", "12px", "6px", "14px", "4px"] }}
-                      transition={{ repeat: Infinity, duration: 1.2, ease: "easeInOut" }}
-                      className="w-[2.5px] bg-emerald-400 rounded-full"
-                    />
-                    <motion.span
-                      animate={{ height: ["8px", "4px", "14px", "6px", "8px"] }}
-                      transition={{ repeat: Infinity, duration: 1.0, ease: "easeInOut", delay: 0.15 }}
-                      className="w-[2.5px] bg-emerald-400 rounded-full"
-                    />
-                    <motion.span
-                      animate={{ height: ["12px", "6px", "4px", "14px", "12px"] }}
-                      transition={{ repeat: Infinity, duration: 1.1, ease: "easeInOut", delay: 0.3 }}
-                      className="w-[2.5px] bg-emerald-400 rounded-full"
-                    />
+              {isCompact ? (
+                /* Compact Pill Content */
+                <div className="flex items-center justify-between w-full h-full select-none">
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {media.has_media && media.is_playing ? (
+                      <div className="flex items-end gap-[1.5px] h-2.5 shrink-0">
+                        <motion.span
+                          animate={{ height: ["3px", "8px", "4px", "9px", "3px"] }}
+                          transition={{ repeat: Infinity, duration: 1.2, ease: "easeInOut" }}
+                          className="w-[2px] rounded-full"
+                          style={{ backgroundColor: settings.accentColor }}
+                        />
+                        <motion.span
+                          animate={{ height: ["6px", "3px", "9px", "4px", "6px"] }}
+                          transition={{ repeat: Infinity, duration: 1.0, ease: "easeInOut", delay: 0.15 }}
+                          className="w-[2px] rounded-full"
+                          style={{ backgroundColor: settings.accentColor }}
+                        />
+                        <motion.span
+                          animate={{ height: ["8px", "4px", "3px", "9px", "8px"] }}
+                          transition={{ repeat: Infinity, duration: 1.1, ease: "easeInOut", delay: 0.3 }}
+                          className="w-[2px] rounded-full"
+                          style={{ backgroundColor: settings.accentColor }}
+                        />
+                      </div>
+                    ) : (
+                      <span className="w-1.5 h-1.5 rounded-full bg-neutral-500/80" />
+                    )}
                   </div>
-                ) : (
-                  <Music2 className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
-                )}
-
-                {showLyrics && currentLyricText ? (
-                  <AnimatePresence mode="popLayout" initial={false}>
-                    <motion.span
-                      key={currentLyricText}
-                      initial={{ opacity: 0, y: 10, filter: "blur(4px)" }}
-                      animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-                      exit={{ opacity: 0, y: -10, filter: "blur(4px)" }}
-                      transition={{
-                        type: "spring",
-                        stiffness: 380,
-                        damping: 28,
-                        opacity: { duration: 0.2 },
-                      }}
-                      className="text-xs font-medium text-emerald-300 truncate select-none block"
-                    >
-                      {currentLyricText}
-                    </motion.span>
-                  </AnimatePresence>
-                ) : (
-                  <span className="text-xs font-medium text-neutral-200 truncate select-none">
-                    {media.has_media ? media.title : "Notch"}
+                  <span className="text-[10px] font-mono tracking-tight text-neutral-300">
+                    {time}
                   </span>
-                )}
-              </div>
+                </div>
+              ) : (
+                /* Normal Collapsed View */
+                <>
+                  <div className="flex items-center gap-2 overflow-hidden flex-1 min-w-0 mr-2">
+                    {media.has_media && media.is_playing ? (
+                      <div className="flex items-end gap-[2px] h-3.5 shrink-0 px-0.5">
+                        <motion.span
+                          animate={{ height: ["4px", "12px", "6px", "14px", "4px"] }}
+                          transition={{ repeat: Infinity, duration: 1.2, ease: "easeInOut" }}
+                          className="w-[2.5px] rounded-full"
+                          style={{ backgroundColor: settings.accentColor }}
+                        />
+                        <motion.span
+                          animate={{ height: ["8px", "4px", "14px", "6px", "8px"] }}
+                          transition={{ repeat: Infinity, duration: 1.0, ease: "easeInOut", delay: 0.15 }}
+                          className="w-[2.5px] rounded-full"
+                          style={{ backgroundColor: settings.accentColor }}
+                        />
+                        <motion.span
+                          animate={{ height: ["12px", "6px", "4px", "14px", "12px"] }}
+                          transition={{ repeat: Infinity, duration: 1.1, ease: "easeInOut", delay: 0.3 }}
+                          className="w-[2.5px] rounded-full"
+                          style={{ backgroundColor: settings.accentColor }}
+                        />
+                      </div>
+                    ) : (
+                      <Music2 className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                    )}
 
-              <div className="flex items-center gap-1.5 text-neutral-400 shrink-0">
-                <Clock className="w-3 h-3 text-neutral-500" />
-                <span className="text-[11px] font-mono text-neutral-300">
-                  {time}
-                </span>
-              </div>
+                    {showLyrics && currentLyricText ? (
+                      <AnimatePresence mode="popLayout" initial={false}>
+                        <motion.span
+                          key={currentLyricText}
+                          initial={{ opacity: 0, y: 10, filter: "blur(4px)" }}
+                          animate={{
+                            opacity: 1,
+                            y: 0,
+                            filter: "blur(0px)",
+                            x: lyricOverflowInfo.isOverflowing
+                              ? [0, 0, -lyricOverflowInfo.distance, -lyricOverflowInfo.distance, 0]
+                              : 0,
+                          }}
+                          exit={{ opacity: 0, y: -10, filter: "blur(4px)" }}
+                          transition={{
+                            type: "spring",
+                            stiffness: 380,
+                            damping: 28,
+                            opacity: { duration: 0.2 },
+                            x: lyricOverflowInfo.isOverflowing
+                              ? {
+                                  duration: Math.max(3.8, lyricOverflowInfo.distance / 18),
+                                  times: [0, 0.22, 0.65, 0.85, 1],
+                                  repeat: Infinity,
+                                  repeatDelay: 1.2,
+                                  ease: "easeInOut",
+                                }
+                              : undefined,
+                          }}
+                          className="select-none inline-block whitespace-nowrap"
+                          style={{
+                            color: settings.accentColor,
+                            fontWeight: Number(settings.fontWeight),
+                            fontSize: `${12 * settings.fontSizeScale}px`,
+                          }}
+                        >
+                          {currentLyricText}
+                        </motion.span>
+                      </AnimatePresence>
+                    ) : (
+                      <span
+                        className="truncate select-none"
+                        style={{
+                          color: settings.textColor,
+                          fontWeight: Number(settings.fontWeight),
+                          fontSize: `${12 * settings.fontSizeScale}px`,
+                        }}
+                      >
+                        {media.has_media ? media.title : "Notch"}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-1.5 text-neutral-400 shrink-0">
+                    <Clock className="w-3 h-3 text-neutral-500" />
+                    <span
+                      className="font-mono text-neutral-300"
+                      style={{ fontSize: `${11 * settings.fontSizeScale}px` }}
+                    >
+                      {time}
+                    </span>
+                  </div>
+                </>
+              )}
             </motion.div>
           ) : (
             /* Expanded View */
@@ -560,32 +824,84 @@ export default function App() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0, pointerEvents: "none" }}
               transition={{ duration: 0.2 }}
-              className="absolute inset-0 flex flex-col justify-between p-4 pb-5 overflow-hidden"
+              style={{
+                width: dims.expanded_width,
+                height:
+                  expandedView !== "player"
+                    ? dims.lyrics_height
+                    : dims.expanded_height,
+              }}
+              className="absolute top-0 left-1/2 -translate-x-1/2 flex flex-col justify-between p-4 pb-5 overflow-hidden"
             >
               {/* Header Bar */}
               <div className="flex items-center justify-between pb-2 border-b border-white/5">
                 <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.7)]" />
+                  <span
+                    className="w-2 h-2 rounded-full"
+                    style={{
+                      backgroundColor: settings.accentColor,
+                      boxShadow: `0 0 8px ${settings.accentColor}b3`,
+                    }}
+                  />
                   <span className="text-[11px] font-mono tracking-wider text-neutral-400 uppercase">
-                    {showLyrics ? "Synchronized Lyrics" : "Media Active"}
+                    {expandedView === "queue"
+                      ? "Queue / Playlist"
+                      : expandedView === "lyrics"
+                      ? "Synchronized Lyrics"
+                      : "Media Active"}
                   </span>
                 </div>
 
                 <div className="flex items-center gap-1">
-                  {/* Lyrics Toggle Button */}
+                  {/* View Switcher: Player, Lyrics, Queue */}
                   {media.has_media && (
-                    <button
-                      onClick={toggleLyricsMode}
-                      title="Toggle Lyrics"
-                      className={`p-1.5 rounded-lg transition-colors ${
-                        showLyrics
-                          ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-                          : "text-neutral-400 hover:text-white hover:bg-white/10"
-                      }`}
-                    >
-                      <Mic2 className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center bg-white/5 rounded-lg p-0.5 border border-white/5">
+                      <button
+                        onClick={(e) => switchView(e, "player")}
+                        title="Player"
+                        className={`p-1 rounded-md transition-colors ${
+                          expandedView === "player"
+                            ? "bg-white/15 text-white"
+                            : "text-neutral-400 hover:text-white"
+                        }`}
+                      >
+                        <Music2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={(e) => switchView(e, "lyrics")}
+                        title="Lyrics"
+                        className="p-1 rounded-md transition-colors"
+                        style={
+                          expandedView === "lyrics"
+                            ? { backgroundColor: `${settings.accentColor}25`, color: settings.accentColor }
+                            : { color: "#9ca3af" }
+                        }
+                      >
+                        <Mic2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={(e) => switchView(e, "queue")}
+                        title="Queue"
+                        className="p-1 rounded-md transition-colors"
+                        style={
+                          expandedView === "queue"
+                            ? { backgroundColor: `${settings.accentColor}25`, color: settings.accentColor }
+                            : { color: "#9ca3af" }
+                        }
+                      >
+                        <ListMusic className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   )}
+
+                  {/* Settings Button */}
+                  <button
+                    onClick={handleOpenSettings}
+                    title="Settings"
+                    className="text-neutral-400 hover:text-white p-1.5 rounded-lg hover:bg-white/10 transition-colors"
+                  >
+                    <Settings className="w-3.5 h-3.5" />
+                  </button>
 
                   <button
                     onClick={(e) => {
@@ -599,23 +915,36 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Middle Section: Player OR Lyrics */}
-              {!showLyrics ? (
+              {/* Middle Section: Player OR Lyrics OR Queue */}
+              {expandedView === "player" ? (
                 <>
                   <div className="flex items-center gap-3.5 py-1.5">
                     <div className="w-12 h-12 rounded-xl bg-neutral-900 border border-white/10 flex items-center justify-center shrink-0 overflow-hidden shadow-inner">
                       {media.has_media ? (
-                        <Music2 className="w-6 h-6 text-emerald-400" />
+                        <Music2
+                          className="w-6 h-6"
+                          style={{ color: settings.accentColor }}
+                        />
                       ) : (
                         <Sparkles className="w-5 h-5 text-neutral-500" />
                       )}
                     </div>
 
                     <div className="flex flex-col min-w-0 flex-1">
-                      <span className="text-sm font-semibold text-white truncate">
+                      <span
+                        className="truncate"
+                        style={{
+                          color: settings.textColor,
+                          fontWeight: Number(settings.fontWeight),
+                          fontSize: `${14 * settings.fontSizeScale}px`,
+                        }}
+                      >
                         {media.has_media ? media.title : "No Active Media"}
                       </span>
-                      <span className="text-xs text-neutral-400 truncate">
+                      <span
+                        className="text-neutral-400 truncate"
+                        style={{ fontSize: `${12 * settings.fontSizeScale}px` }}
+                      >
                         {media.has_media
                           ? media.artist || media.album || "Unknown Artist"
                           : `System Clock: ${time}`}
@@ -628,8 +957,9 @@ export default function App() {
                     <div className="flex flex-col gap-1.5 py-1.5">
                       <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
                         <div
-                          className="h-full bg-emerald-400 rounded-full transition-all duration-300"
+                          className="h-full rounded-full transition-all duration-300"
                           style={{
+                            backgroundColor: settings.accentColor,
                             width: `${Math.min(
                               100,
                               (playbackPos / media.duration_sec) * 100
@@ -644,7 +974,7 @@ export default function App() {
                     </div>
                   )}
                 </>
-              ) : (
+              ) : expandedView === "lyrics" ? (
                 /* Lyrics Scroll Stream */
                 <div className="my-1 flex-1 min-h-[140px] max-h-[150px] overflow-hidden flex flex-col justify-center">
                   {lyricsLoading ? (
@@ -664,9 +994,21 @@ export default function App() {
                             key={idx}
                             className={`text-center transition-all duration-300 ${
                               isActive
-                                ? "text-emerald-300 font-semibold text-sm scale-105 drop-shadow-[0_0_8px_rgba(52,211,153,0.4)]"
-                                : "text-neutral-500 text-xs hover:text-neutral-300"
+                                ? "scale-105"
+                                : "text-neutral-500 hover:text-neutral-300"
                             }`}
+                            style={
+                              isActive
+                                ? {
+                                    color: settings.accentColor,
+                                    fontWeight: Math.min(800, Number(settings.fontWeight) + 100),
+                                    fontSize: `${14 * settings.fontSizeScale}px`,
+                                    filter: `drop-shadow(0 0 8px ${settings.accentColor}66)`,
+                                  }
+                                : {
+                                    fontSize: `${12 * settings.fontSizeScale}px`,
+                                  }
+                            }
                           >
                             {line.text}
                           </p>
@@ -685,6 +1027,62 @@ export default function App() {
                       Lirik tidak ditemukan untuk lagu ini
                     </div>
                   )}
+                </div>
+              ) : (
+                /* Queue / Upcoming Tracks */
+                <div className="my-1 flex-1 min-h-[140px] max-h-[150px] overflow-hidden flex flex-col">
+                  <div className="flex items-center justify-between text-[10px] text-neutral-400 font-mono px-1 pb-1 border-b border-white/5">
+                    <span>UPCOMING PLAYLIST</span>
+                    <span>{queue.length > 0 ? `${queue.length} lagu` : "Menunggu Spotify..."}</span>
+                  </div>
+                  <div
+                    className="flex-1 overflow-y-auto space-y-1 py-1.5 pr-0.5"
+                    style={{ scrollbarWidth: "none" }}
+                  >
+                    {queue.length > 0 ? (
+                      queue.map((track, idx) => (
+                        <div
+                          key={track.uri || idx}
+                          className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-white/[0.03] hover:bg-white/[0.08] transition-colors group"
+                        >
+                          <span className="text-[10px] font-mono text-neutral-500 w-3.5 text-center shrink-0">
+                            {idx + 1}
+                          </span>
+                          {track.image_url ? (
+                            <img
+                              src={track.image_url}
+                              alt=""
+                              className="w-7 h-7 rounded bg-neutral-900 object-cover shrink-0"
+                              onError={(e) => {
+                                (e.target as HTMLElement).style.display = "none";
+                              }}
+                            />
+                          ) : (
+                            <div className="w-7 h-7 rounded bg-neutral-900 flex items-center justify-center shrink-0 text-neutral-600">
+                              <Music2 className="w-3.5 h-3.5" />
+                            </div>
+                          )}
+                          <div className="flex-1 min-w-0 flex flex-col">
+                            <span className="text-xs text-neutral-200 font-medium truncate group-hover:text-emerald-400 transition-colors">
+                              {track.title}
+                            </span>
+                            <span className="text-[10px] text-neutral-400 truncate">
+                              {track.artist}
+                            </span>
+                          </div>
+                          {track.duration_ms > 0 && (
+                            <span className="text-[10px] font-mono text-neutral-500 shrink-0">
+                              {formatMs(track.duration_ms)}
+                            </span>
+                          )}
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-xs text-neutral-500 text-center py-8">
+                        Putar lagu atau playlist di Spotify untuk memuat antrean
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 

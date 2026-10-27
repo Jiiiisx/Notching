@@ -60,7 +60,9 @@ pub fn get_current_media_track() -> Result<MediaTrackInfo, Box<dyn std::error::E
         (0.0, 0.0)
     };
 
-    let has_media = !title.is_empty();
+    let title_lower = title.to_lowercase();
+    let is_browser_error = title_lower.starts_with("hmmm") || title_lower.contains("can't reach this page") || title_lower.contains("refused to connect");
+    let has_media = !title.is_empty() && !is_browser_error;
 
     Ok(MediaTrackInfo {
         title,
