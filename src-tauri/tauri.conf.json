@@ -14,8 +14,8 @@
       {
         "label": "main",
         "title": "Notch",
-        "width": 180,
-        "height": 36,
+        "width": 680,
+        "height": 350,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,

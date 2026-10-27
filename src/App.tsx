@@ -142,36 +142,42 @@ export default function App() {
       .catch((err) => console.error("Failed to load dimensions:", err));
   }, [settings.targetMonitor]);
 
-  // Synchronize native window dimensions dynamically, ensuring canvas is always wider than the notch
-  const updateNativeWindow = async (
+  // Zero-Resize Architecture: Notify Rust about current pill geometry for click-through hit-testing
+  const updateGeometry = (
     isExp: boolean,
-    lyricsMode: boolean,
     customWidth?: number,
-    monitorId?: string
+    customHeight?: number
   ) => {
-    const activeWidth = customWidth ?? (isExp ? dims.expanded_width : isCompact ? 114 : dynamicCollapsedWidth);
-    const width = isExp
-      ? Math.max(dims.expanded_width + 16, Math.ceil(activeWidth + 24))
-      : Math.ceil(activeWidth + 12);
-    const height = isExp
-      ? lyricsMode
-        ? dims.lyrics_height + 12
-        : dims.expanded_height + 12
-      : isCompact
-      ? 24
-      : dims.collapsed_height;
-    try {
-      await invoke("set_notch_size", {
-        width: Math.ceil(width),
-        height: Math.ceil(height),
-        targetMonitor: monitorId ?? settings.targetMonitor ?? "primary",
-      });
-    } catch {}
+    const activeWidth =
+      customWidth ??
+      (isExp
+        ? dims.expanded_width
+        : isCompact
+        ? 114
+        : dynamicCollapsedWidth);
+    const activeHeight =
+      customHeight ??
+      (isExp
+        ? expandedView !== "player"
+          ? dims.lyrics_height
+          : dims.expanded_height
+        : isCompact
+        ? 22
+        : dims.collapsed_height);
+    invoke("update_notch_geometry", {
+      isExpanded: isExp,
+      width: Math.ceil(activeWidth),
+      height: Math.ceil(activeHeight),
+    }).catch(() => {});
   };
 
   // Immediate reposition when target monitor changes in settings
   useEffect(() => {
-    updateNativeWindow(expanded, showLyrics, undefined, settings.targetMonitor);
+    invoke("set_notch_size", {
+      width: 680,
+      height: 350,
+      targetMonitor: settings.targetMonitor ?? "primary",
+    }).catch(() => {});
   }, [settings.targetMonitor]);
 
   // Listen to smart avoidance updates from Rust detector
@@ -184,12 +190,12 @@ export default function App() {
     };
   }, []);
 
-  // Update native window when compact state toggles while collapsed (not animating)
+  // Update geometry when compact state toggles while collapsed
   useEffect(() => {
     if (!expandedRef.current && !isTransitioningRef.current) {
-      updateNativeWindow(false, showLyrics);
+      updateGeometry(false, isCompact ? 114 : dynamicCollapsedWidth, isCompact ? 22 : dims.collapsed_height);
     }
-  }, [isCompact, showLyrics]);
+  }, [isCompact]);
 
   const isInsideNotch = (clientX: number, clientY: number): boolean => {
     if (!notchRef.current) return false;
@@ -218,16 +224,8 @@ export default function App() {
       clearTimeout(collapseSafetyTimerRef.current);
       collapseSafetyTimerRef.current = null;
     }
-    // Post-Transition double RAF Guard: wait for WebView2 to finish rasterizing & presenting
-    // the collapsed frame to DWM before shrinking native window canvas bounds
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (!expandedRef.current) {
-          isTransitioningRef.current = false;
-          updateNativeWindow(false, showLyrics, dynamicCollapsedWidth);
-        }
-      });
-    });
+    isTransitioningRef.current = false;
+    updateGeometry(false, isCompact ? 114 : dynamicCollapsedWidth, isCompact ? 22 : dims.collapsed_height);
   };
 
   const scheduleCollapse = (delay = 200) => {
@@ -248,7 +246,7 @@ export default function App() {
     if (!expandedRef.current) {
       isTransitioningRef.current = true;
       expandedRef.current = true;
-      updateNativeWindow(true, expandedView !== "player");
+      updateGeometry(true);
       setExpanded(true);
     }
   };
@@ -296,11 +294,11 @@ export default function App() {
   }, [expanded]);
 
   // Switch between expanded views
-  const switchView = async (e: React.MouseEvent, view: "player" | "lyrics" | "queue") => {
+  const switchView = (e: React.MouseEvent, view: "player" | "lyrics" | "queue") => {
     e.stopPropagation();
     setExpandedView(view);
-    if (expanded) {
-      await updateNativeWindow(true, view !== "player");
+    if (expandedRef.current) {
+      updateGeometry(true, dims.expanded_width, view !== "player" ? dims.lyrics_height : dims.expanded_height);
     }
   };
 
@@ -548,12 +546,12 @@ export default function App() {
     };
   }, [currentLyricText, dynamicCollapsedWidth, settings.fontSizeScale]);
 
-  // Keep native window canvas wide enough whenever dynamicCollapsedWidth changes (not animating)
+  // Update geometry whenever dynamicCollapsedWidth changes (not animating)
   useEffect(() => {
     if (!expandedRef.current && !isTransitioningRef.current) {
-      updateNativeWindow(false, showLyrics, dynamicCollapsedWidth);
+      updateGeometry(false, dynamicCollapsedWidth);
     }
-  }, [dynamicCollapsedWidth, showLyrics]);
+  }, [dynamicCollapsedWidth]);
 
   // Auto-scroll lyrics to keep active line centered
   useEffect(() => {

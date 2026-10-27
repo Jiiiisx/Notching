@@ -1,4 +1,5 @@
 mod game_detector;
+mod hit_test;
 mod media;
 mod queue_server;
 mod window_helper;
@@ -49,8 +50,8 @@ fn set_notch_state(app: AppHandle, expanded: bool, target_monitor: Option<String
 fn set_notch_size(
     app: AppHandle,
     state: tauri::State<Arc<game_detector::GameDetectorState>>,
-    width: f64,
-    height: f64,
+    _width: f64,
+    _height: f64,
     target_monitor: Option<String>,
 ) {
     if let Some(target) = &target_monitor {
@@ -66,7 +67,30 @@ fn set_notch_size(
     };
 
     if let Some(window) = app.get_webview_window("main") {
-        window_helper::reposition_notch(&window, width, height, effective_monitor.as_deref());
+        window_helper::reposition_notch(
+            &window,
+            window_helper::NOTCH_CANVAS_WIDTH,
+            window_helper::NOTCH_CANVAS_HEIGHT,
+            effective_monitor.as_deref(),
+        );
+    }
+}
+
+#[tauri::command]
+fn update_notch_geometry(
+    state: tauri::State<Arc<hit_test::HitTestState>>,
+    is_expanded: bool,
+    width: Option<f64>,
+    height: Option<f64>,
+) {
+    if let Ok(mut lock) = state.geometry.lock() {
+        lock.is_expanded = is_expanded;
+        if let Some(w) = width {
+            lock.width = w;
+        }
+        if let Some(h) = height {
+            lock.height = h;
+        }
     }
 }
 
@@ -125,8 +149,12 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            let hit_test_state = Arc::new(hit_test::HitTestState::default());
+            app.manage(hit_test_state.clone());
+
             if let Some(window) = app.get_webview_window("main") {
                 window_helper::setup_notch_window(&window);
+                hit_test::start_cursor_hit_test(window.clone(), hit_test_state);
             }
 
             let game_detector_state = Arc::new(game_detector::GameDetectorState::default());
@@ -152,6 +180,7 @@ pub fn run() {
             get_notch_config,
             set_notch_state,
             set_notch_size,
+            update_notch_geometry,
             get_available_monitors,
             set_game_mode,
             get_media_track,

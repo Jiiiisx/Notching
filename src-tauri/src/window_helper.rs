@@ -129,6 +129,9 @@ pub fn get_responsive_dimensions(
     }
 }
 
+pub const NOTCH_CANVAS_WIDTH: f64 = 680.0;
+pub const NOTCH_CANVAS_HEIGHT: f64 = 350.0;
+
 pub fn setup_notch_window(window: &WebviewWindow) {
     if let Ok(hwnd) = window.hwnd() {
         unsafe {
@@ -138,8 +141,7 @@ pub fn setup_notch_window(window: &WebviewWindow) {
             SetWindowLongPtrW(hwnd_val, GWL_EXSTYLE, new_style);
         }
     }
-    let dims = get_responsive_dimensions(window, None);
-    reposition_notch(window, dims.collapsed_width, dims.collapsed_height, None);
+    reposition_notch(window, NOTCH_CANVAS_WIDTH, NOTCH_CANVAS_HEIGHT, None);
 }
 
 pub fn reposition_notch(

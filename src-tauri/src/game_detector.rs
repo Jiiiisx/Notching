@@ -332,11 +332,10 @@ pub fn start_game_detector(app: AppHandle, state: Arc<GameDetectorState>) {
                         *lock = None;
                     }
                     let cfg_mon = state.configured_monitor.lock().ok().and_then(|m| m.clone());
-                    let dims = window_helper::get_responsive_dimensions(&main_win, cfg_mon.as_deref());
                     window_helper::reposition_notch(
                         &main_win,
-                        dims.collapsed_width,
-                        dims.collapsed_height,
+                        window_helper::NOTCH_CANVAS_WIDTH,
+                        window_helper::NOTCH_CANVAS_HEIGHT,
                         cfg_mon.as_deref(),
                     );
                 }
@@ -393,14 +392,10 @@ pub fn start_game_detector(app: AppHandle, state: Arc<GameDetectorState>) {
                             if let Some(target) = other_monitor {
                                 if let Some(target_name) = target.name() {
                                     if currently_shifted.as_deref() != Some(target_name) {
-                                        let dims = window_helper::get_responsive_dimensions(
-                                            &main_win,
-                                            Some(target_name),
-                                        );
                                         window_helper::reposition_notch(
                                             &main_win,
-                                            dims.collapsed_width,
-                                            dims.collapsed_height,
+                                            window_helper::NOTCH_CANVAS_WIDTH,
+                                            window_helper::NOTCH_CANVAS_HEIGHT,
                                             Some(target_name),
                                         );
                                         unsafe {
@@ -479,14 +474,10 @@ pub fn start_game_detector(app: AppHandle, state: Arc<GameDetectorState>) {
                             *lock = None;
                         }
                         // Restore back to user's configured monitor
-                        let dims = window_helper::get_responsive_dimensions(
-                            &main_win,
-                            configured_mon.as_deref(),
-                        );
                         window_helper::reposition_notch(
                             &main_win,
-                            dims.collapsed_width,
-                            dims.collapsed_height,
+                            window_helper::NOTCH_CANVAS_WIDTH,
+                            window_helper::NOTCH_CANVAS_HEIGHT,
                             configured_mon.as_deref(),
                         );
                         let _ = app.emit(
