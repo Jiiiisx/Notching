@@ -383,6 +383,33 @@ export default function App() {
     }
   };
 
+  const cycleAudioOutput = async () => {
+    let currentStatus = audioStatus;
+    if (!currentStatus || currentStatus.output_devices.length < 2) {
+      try {
+        currentStatus = await invoke<AudioStatus>("get_audio_status");
+        setAudioStatus(currentStatus);
+      } catch {
+        return;
+      }
+    }
+    if (!currentStatus || currentStatus.output_devices.length < 2) return;
+    const currentId = currentStatus.current_output_id;
+    const currentIdx = currentStatus.output_devices.findIndex((d) => d.id === currentId);
+    const nextIdx = (currentIdx + 1) % currentStatus.output_devices.length;
+    const nextDev = currentStatus.output_devices[nextIdx];
+    if (nextDev) {
+      try {
+        const updated = await invoke<AudioStatus>("set_default_audio_device", {
+          deviceId: nextDev.id,
+        });
+        setAudioStatus(updated);
+      } catch (err) {
+        console.error("Failed to cycle audio output:", err);
+      }
+    }
+  };
+
   useEffect(() => {
     expandedRef.current = expanded;
   }, [expanded]);
@@ -535,6 +562,10 @@ export default function App() {
           is_muted: event.payload.is_muted,
           current_output_id: event.payload.output_id,
           current_output_name: event.payload.output_name,
+          output_devices: prev.output_devices.map((d) => ({
+            ...d,
+            is_default: d.id === event.payload.output_id,
+          })),
         };
       });
 
@@ -1634,7 +1665,16 @@ export default function App() {
                       e.stopPropagation();
                       setShowAudioSwitcher((prev) => !prev);
                     }}
-                    title="Audio Devices & Master Volume"
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      cycleAudioOutput();
+                    }}
+                    title={
+                      audioStatus?.current_output_name
+                        ? `Output: ${audioStatus.current_output_name} (Klik: Buka Panel, Klik-Kanan: Ganti Output Langsung)`
+                        : "Audio Devices & Master Volume (Klik: Panel, Klik-Kanan: Ganti Output)"
+                    }
                     className={`p-1.5 rounded-lg transition-colors ${
                       showAudioSwitcher
                         ? "bg-white/20 text-white"

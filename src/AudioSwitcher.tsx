@@ -121,8 +121,11 @@ export const AudioSwitcher: React.FC<AudioSwitcherProps> = ({
   const handleSelectDevice = async (deviceId: string) => {
     try {
       setSwitchingId(deviceId);
-      await invoke("set_default_audio_device", { deviceId });
-      // Refresh status after switching
+      const updated = await invoke<AudioStatus>("set_default_audio_device", { deviceId });
+      if (updated) {
+        setAudioStatus(updated);
+        onStatusChange?.(updated);
+      }
       await fetchAudioStatus();
     } catch (err) {
       console.error("Failed to set default audio device:", err);

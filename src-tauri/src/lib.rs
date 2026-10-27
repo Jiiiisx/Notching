@@ -139,18 +139,34 @@ fn get_audio_status() -> Result<audio_manager::AudioStatus, String> {
 }
 
 #[tauri::command]
-fn set_master_volume(level: f32) -> Result<(), String> {
-    audio_manager::set_master_volume(level).map_err(|e| e.to_string())
+fn set_master_volume(app: AppHandle, level: f32) -> Result<(), String> {
+    audio_manager::set_master_volume(level).map_err(|e| e.to_string())?;
+    if let Ok(info) = audio_manager::get_quick_volume_info() {
+        let _ = app.emit("audio_status_changed", &info);
+    }
+    Ok(())
 }
 
 #[tauri::command]
-fn set_master_mute(mute: bool) -> Result<(), String> {
-    audio_manager::set_master_mute(mute).map_err(|e| e.to_string())
+fn set_master_mute(app: AppHandle, mute: bool) -> Result<(), String> {
+    audio_manager::set_master_mute(mute).map_err(|e| e.to_string())?;
+    if let Ok(info) = audio_manager::get_quick_volume_info() {
+        let _ = app.emit("audio_status_changed", &info);
+    }
+    Ok(())
 }
 
 #[tauri::command]
-fn set_default_audio_device(device_id: String) -> Result<(), String> {
-    audio_manager::set_default_device(&device_id).map_err(|e| e.to_string())
+fn set_default_audio_device(
+    app: AppHandle,
+    device_id: String,
+) -> Result<audio_manager::AudioStatus, String> {
+    audio_manager::set_default_device(&device_id).map_err(|e| e.to_string())?;
+    let status = audio_manager::get_audio_status().map_err(|e| e.to_string())?;
+    if let Ok(info) = audio_manager::get_quick_volume_info() {
+        let _ = app.emit("audio_status_changed", &info);
+    }
+    Ok(status)
 }
 
 #[tauri::command]
