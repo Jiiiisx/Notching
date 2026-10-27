@@ -233,8 +233,8 @@ export default function App() {
       }
 
       const target = e.target as HTMLElement;
-      const isTodoScroll = target.closest(".todo-list-scroll");
-      const isShelfScroll = target.closest(".shelf-scroll");
+      const isTodoScroll = target.closest(".todo-list-scroll") as HTMLElement | null;
+      const isShelfScroll = target.closest(".shelf-scroll") as HTMLElement | null;
 
       if (activeModule === "media") {
         if (Math.abs(e.deltaY) > 15) {
@@ -243,7 +243,24 @@ export default function App() {
           else switchModule("shelf");
         }
       } else if (activeModule === "todo") {
-        if (!isTodoScroll) {
+        let canScrollY = false;
+        if (isTodoScroll) {
+          const hasOverflow = isTodoScroll.scrollHeight > isTodoScroll.clientHeight + 2;
+          if (hasOverflow) {
+            // Scroll inside list if within boundaries
+            if (e.deltaY < -15 && isTodoScroll.scrollTop > 1) {
+              canScrollY = true;
+            } else if (
+              e.deltaY > 15 &&
+              isTodoScroll.scrollTop + isTodoScroll.clientHeight < isTodoScroll.scrollHeight - 2
+            ) {
+              canScrollY = true;
+            }
+          }
+        }
+
+        // If not actively scrolling tasks (empty list, few items, or reached top/bottom edge)
+        if (!canScrollY) {
           if (e.deltaY > 15) {
             lastWheelTimeRef.current = now;
             switchModule("shelf");
@@ -253,7 +270,23 @@ export default function App() {
           }
         }
       } else if (activeModule === "shelf") {
-        if (!isShelfScroll) {
+        let canScrollY = false;
+        if (isShelfScroll) {
+          const hasOverflow = isShelfScroll.scrollHeight > isShelfScroll.clientHeight + 2;
+          if (hasOverflow) {
+            if (e.deltaY < -15 && isShelfScroll.scrollTop > 1) {
+              canScrollY = true;
+            } else if (
+              e.deltaY > 15 &&
+              isShelfScroll.scrollTop + isShelfScroll.clientHeight < isShelfScroll.scrollHeight - 2
+            ) {
+              canScrollY = true;
+            }
+          }
+        }
+
+        // If not actively scrolling shelf items, propagate boundary switch
+        if (!canScrollY) {
           if (e.deltaY < -15) {
             lastWheelTimeRef.current = now;
             switchModule("todo");
@@ -1405,37 +1438,49 @@ export default function App() {
 
                 <div className="flex items-center gap-1.5">
                   {/* Module Page Indicator: Dots only without top arrows */}
-                  <div className="flex items-center gap-1.5 px-2 py-1 bg-white/5 rounded-full border border-white/5">
+                  <div className="flex items-center gap-1 px-1.5 py-0.5 bg-white/5 rounded-full border border-white/5">
                     <button
                       type="button"
                       onClick={() => switchModule("media")}
                       title="Media Player"
-                      className={`w-1.5 h-1.5 rounded-full transition-all ${
-                        activeModule === "media"
-                          ? "bg-white scale-125 shadow-[0_0_6px_rgba(255,255,255,0.8)]"
-                          : "bg-neutral-600 hover:bg-neutral-400"
-                      }`}
-                    />
+                      className="p-1 rounded-full flex items-center justify-center transition-all cursor-pointer hover:bg-white/10"
+                    >
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full transition-all ${
+                          activeModule === "media"
+                            ? "bg-white scale-125 shadow-[0_0_6px_rgba(255,255,255,0.8)]"
+                            : "bg-neutral-600 hover:bg-neutral-400"
+                        }`}
+                      />
+                    </button>
                     <button
                       type="button"
                       onClick={() => switchModule("todo")}
                       title="To-Do List"
-                      className={`w-1.5 h-1.5 rounded-full transition-all ${
-                        activeModule === "todo"
-                          ? "bg-white scale-125 shadow-[0_0_6px_rgba(255,255,255,0.8)]"
-                          : "bg-neutral-600 hover:bg-neutral-400"
-                      }`}
-                    />
+                      className="p-1 rounded-full flex items-center justify-center transition-all cursor-pointer hover:bg-white/10"
+                    >
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full transition-all ${
+                          activeModule === "todo"
+                            ? "bg-white scale-125 shadow-[0_0_6px_rgba(255,255,255,0.8)]"
+                            : "bg-neutral-600 hover:bg-neutral-400"
+                        }`}
+                      />
+                    </button>
                     <button
                       type="button"
                       onClick={() => switchModule("shelf")}
                       title="Quick Shelf & Stash"
-                      className={`w-1.5 h-1.5 rounded-full transition-all ${
-                        activeModule === "shelf"
-                          ? "bg-white scale-125 shadow-[0_0_6px_rgba(255,255,255,0.8)]"
-                          : "bg-neutral-600 hover:bg-neutral-400"
-                      }`}
-                    />
+                      className="p-1 rounded-full flex items-center justify-center transition-all cursor-pointer hover:bg-white/10"
+                    >
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full transition-all ${
+                          activeModule === "shelf"
+                            ? "bg-white scale-125 shadow-[0_0_6px_rgba(255,255,255,0.8)]"
+                            : "bg-neutral-600 hover:bg-neutral-400"
+                        }`}
+                      />
+                    </button>
                   </div>
 
                   {/* View Switcher: Player, Lyrics, Queue (Only in media module) */}

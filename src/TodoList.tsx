@@ -47,7 +47,10 @@ export function TodoList({
   return (
     <div className="flex flex-col h-full justify-between gap-2 overflow-hidden select-none px-4">
       {/* Scrollable Tasks Container */}
-      <div className="todo-list-scroll flex-1 overflow-y-auto pr-1 space-y-1.5 max-h-[175px] scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+      <div
+        className="todo-list-scroll flex-1 overflow-y-auto pr-1 space-y-1.5 max-h-[175px] no-scrollbar"
+        style={{ scrollbarWidth: "none" }}
+      >
         {todos.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full py-6 text-neutral-500 gap-1.5">
             <Sparkles className="w-5 h-5 text-neutral-600" />

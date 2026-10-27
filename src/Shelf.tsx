@@ -524,7 +524,10 @@ export function Shelf({
         </div>
 
         {/* Shortcuts Horizontal/Grid List */}
-        <div className="grid grid-cols-4 gap-1.5 max-h-[72px] overflow-y-auto pr-0.5 scrollbar-thin">
+        <div
+          className="shelf-scroll grid grid-cols-4 gap-1.5 max-h-[72px] overflow-y-auto pr-0.5 no-scrollbar"
+          style={{ scrollbarWidth: "none" }}
+        >
           {shortcuts.map((sc) => (
             <div
               key={sc.id}
@@ -626,7 +629,10 @@ export function Shelf({
               </div>
             </div>
           ) : (
-            <div className="flex-1 overflow-y-auto p-1.5 space-y-1 max-h-[145px] scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+            <div
+              className="shelf-scroll flex-1 overflow-y-auto p-1.5 space-y-1 max-h-[145px] no-scrollbar"
+              style={{ scrollbarWidth: "none" }}
+            >
               {stashedFiles.map((file) => (
                 <div
                   key={file.id}
