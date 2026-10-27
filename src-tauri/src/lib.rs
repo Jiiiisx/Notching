@@ -1,3 +1,4 @@
+mod audio_manager;
 mod game_detector;
 mod hit_test;
 mod media;
@@ -35,7 +36,7 @@ fn get_notch_config(
             collapsed_width: 210.0,
             collapsed_height: 36.0,
             expanded_width: 420.0,
-            expanded_height: 205.0,
+            expanded_height: 232.0,
             lyrics_height: 300.0,
         }
     }
@@ -128,6 +129,26 @@ fn media_next_track() -> Result<(), String> {
 #[tauri::command]
 fn media_prev_track() -> Result<(), String> {
     media::media_previous().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_audio_status() -> Result<audio_manager::AudioStatus, String> {
+    audio_manager::get_audio_status().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_master_volume(level: f32) -> Result<(), String> {
+    audio_manager::set_master_volume(level).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_master_mute(mute: bool) -> Result<(), String> {
+    audio_manager::set_master_mute(mute).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_default_audio_device(device_id: String) -> Result<(), String> {
+    audio_manager::set_default_device(&device_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -311,6 +332,9 @@ pub fn run() {
             // Start Spicetify local queue server
             queue_server::start_queue_server(app.handle().clone());
 
+            // Start system audio monitor (master volume & device changes)
+            audio_manager::start_audio_monitor(app.handle().clone());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -327,7 +351,11 @@ pub fn run() {
             open_settings,
             open_system_path,
             reveal_in_explorer,
-            get_system_quick_paths
+            get_system_quick_paths,
+            get_audio_status,
+            set_master_volume,
+            set_master_mute,
+            set_default_audio_device
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

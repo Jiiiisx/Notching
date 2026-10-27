@@ -128,7 +128,7 @@ pub fn get_responsive_dimensions(
     let collapsed_width = (mon_width * 0.125).clamp(220.0, 260.0);
     let collapsed_height = 36.0;
     let expanded_width = (mon_width * 0.24).clamp(400.0, 540.0);
-    let expanded_height = 205.0;
+    let expanded_height = 232.0;
     let lyrics_height = 300.0;
 
     NotchDimensions {

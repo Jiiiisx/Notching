@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
-import { motion, AnimatePresence } from "motion/react";
+import { motion, AnimatePresence, animate } from "motion/react";
 import {
   Play,
   Pause,
@@ -18,9 +18,12 @@ import {
   Settings,
   Zap,
   Layers,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import { TodoList, TodoItem } from "./TodoList";
 import { Shelf } from "./Shelf";
+import { AudioSwitcher, AudioStatus } from "./AudioSwitcher";
 import {
   NotchSettings,
   loadSettings,
@@ -98,6 +101,13 @@ function formatTime(sec: number): string {
 export default function App() {
   const [settings, setSettings] = useState<NotchSettings>(loadSettings);
   const [expanded, setExpanded] = useState(false);
+  const [showAudioSwitcher, setShowAudioSwitcher] = useState(false);
+  const [audioStatus, setAudioStatus] = useState<AudioStatus | null>(null);
+  const [showVolumeHud, setShowVolumeHud] = useState(false);
+  const volumeHudTimeoutRef = useRef<number | null>(null);
+  const isInitialAudioEventRef = useRef<boolean>(true);
+  const lastKnownVolumeRef = useRef<number | null>(null);
+  const lastKnownMuteRef = useRef<boolean | null>(null);
   const [expandedView, setExpandedView] = useState<"player" | "lyrics" | "queue">("player");
   const [showLyrics] = useState(true);
   const [queue, setQueue] = useState<QueueTrack[]>([]);
@@ -105,7 +115,7 @@ export default function App() {
     collapsed_width: 190,
     collapsed_height: 36,
     expanded_width: 440,
-    expanded_height: 205,
+    expanded_height: 232,
     lyrics_height: 300,
   });
 
@@ -283,6 +293,38 @@ export default function App() {
       .catch((err) => console.error("Failed to load dimensions:", err));
   }, [settings.targetMonitor]);
 
+  // Track monitor changes to trigger bezel-drop spring animation
+  const prevMonitorRef = useRef<string | undefined>(settings.targetMonitor);
+
+  useEffect(() => {
+    if (prevMonitorRef.current !== undefined && prevMonitorRef.current !== settings.targetMonitor) {
+      if (notchRef.current) {
+        animate(
+          notchRef.current,
+          { y: [-36, 0] },
+          { type: "spring", stiffness: 340, damping: 20, mass: 0.7 }
+        );
+      }
+    }
+    prevMonitorRef.current = settings.targetMonitor;
+  }, [settings.targetMonitor]);
+
+  // Listen to game mode shifts for bezel-drop animation
+  useEffect(() => {
+    const unlistenPromise = listen<{ active: boolean; shifted_to?: string | null }>("game-mode-status", (event) => {
+      if (event.payload.active && event.payload.shifted_to && notchRef.current) {
+        animate(
+          notchRef.current,
+          { y: [-36, 0] },
+          { type: "spring", stiffness: 340, damping: 20, mass: 0.7 }
+        );
+      }
+    });
+    return () => {
+      unlistenPromise.then((fn) => fn());
+    };
+  }, []);
+
   // Immediate reposition when target monitor changes in settings
   useEffect(() => {
     invoke("set_notch_size", {
@@ -336,9 +378,94 @@ export default function App() {
       clearTimeout(collapseSafetyTimerRef.current);
       collapseSafetyTimerRef.current = null;
     }
+    setShowAudioSwitcher(false);
     isTransitioningRef.current = false;
     updateGeometry(false, isCompact ? 114 : dynamicCollapsedWidth, isCompact ? 22 : dims.collapsed_height);
   };
+
+  // Fetch audio status on app mount and on expand
+  useEffect(() => {
+    invoke<AudioStatus>("get_audio_status")
+      .then(setAudioStatus)
+      .catch((err) => console.error("Failed to get audio status:", err));
+  }, []);
+
+  useEffect(() => {
+    if (expanded) {
+      setShowVolumeHud(false);
+      if (volumeHudTimeoutRef.current) {
+        window.clearTimeout(volumeHudTimeoutRef.current);
+      }
+      invoke<AudioStatus>("get_audio_status")
+        .then(setAudioStatus)
+        .catch((err) => console.error("Failed to get audio status:", err));
+    } else {
+      setShowAudioSwitcher(false);
+    }
+  }, [expanded]);
+
+  // Real-time synchronization for system volume & audio device changes
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<{
+      volume: number;
+      is_muted: boolean;
+      output_id: string;
+      output_name: string;
+    }>("audio_status_changed", (event) => {
+      setAudioStatus((prev) => {
+        if (!prev) {
+          return {
+            master_volume: event.payload.volume,
+            is_muted: event.payload.is_muted,
+            current_output_id: event.payload.output_id,
+            current_output_name: event.payload.output_name,
+            current_input_id: null,
+            current_input_name: null,
+            output_devices: [],
+            input_devices: [],
+          };
+        }
+        return {
+          ...prev,
+          master_volume: event.payload.volume,
+          is_muted: event.payload.is_muted,
+          current_output_id: event.payload.output_id,
+          current_output_name: event.payload.output_name,
+        };
+      });
+
+      const isVolChange =
+        lastKnownVolumeRef.current !== null &&
+        (Math.abs(lastKnownVolumeRef.current - event.payload.volume) > 0.004 ||
+          lastKnownMuteRef.current !== event.payload.is_muted);
+
+      lastKnownVolumeRef.current = event.payload.volume;
+      lastKnownMuteRef.current = event.payload.is_muted;
+
+      // Show sleek volume HUD slider in collapsed notch when volume shortcut is pressed
+      if (isVolChange && !isInitialAudioEventRef.current && !expandedRef.current) {
+        setShowVolumeHud(true);
+        if (volumeHudTimeoutRef.current) {
+          window.clearTimeout(volumeHudTimeoutRef.current);
+        }
+        volumeHudTimeoutRef.current = window.setTimeout(() => {
+          setShowVolumeHud(false);
+        }, 1500);
+      }
+
+      isInitialAudioEventRef.current = false;
+    }).then((fn) => {
+      unlisten = fn;
+    });
+
+    return () => {
+      if (unlisten) unlisten();
+      if (volumeHudTimeoutRef.current) {
+        window.clearTimeout(volumeHudTimeoutRef.current);
+      }
+    };
+  }, []);
 
   const scheduleCollapse = (delay = 200) => {
     cancelCollapse();
@@ -724,18 +851,26 @@ export default function App() {
 
   // Distinct width & height per view module: expanded widths and heights can differ freely
   const targetWidth = useMemo(() => {
-    if (!expanded) return isCompact ? 114 : dynamicCollapsedWidth;
+    if (!expanded) {
+      if (showVolumeHud) return 260;
+      return isCompact ? 114 : dynamicCollapsedWidth;
+    }
+    if (showAudioSwitcher) return 480;
     if (activeModule === "todo" || activeModule === "shelf") return 520;
     if (expandedView === "lyrics" || expandedView === "queue") return 480;
     return 460;
-  }, [expanded, isCompact, dynamicCollapsedWidth, activeModule, expandedView]);
+  }, [expanded, isCompact, dynamicCollapsedWidth, showVolumeHud, showAudioSwitcher, activeModule, expandedView]);
 
   const targetHeight = useMemo(() => {
-    if (!expanded) return isCompact ? 22 : dims.collapsed_height;
+    if (!expanded) {
+      if (showVolumeHud && isCompact) return 26;
+      return isCompact ? 22 : dims.collapsed_height;
+    }
+    if (showAudioSwitcher) return 335;
     if (activeModule === "todo" || activeModule === "shelf") return 290;
     if (expandedView === "lyrics" || expandedView === "queue") return 320;
-    return 210;
-  }, [expanded, isCompact, dims.collapsed_height, activeModule, expandedView]);
+    return dims.expanded_height || 232;
+  }, [expanded, isCompact, dims.collapsed_height, dims.expanded_height, showVolumeHud, showAudioSwitcher, activeModule, expandedView]);
 
   // Zero-Resize Architecture: Notify Rust about current pill geometry for click-through hit-testing
   const updateGeometry = (
@@ -759,10 +894,10 @@ export default function App() {
 
   // Update geometry whenever dynamicCollapsedWidth changes (not animating)
   useEffect(() => {
-    if (!expandedRef.current && !isTransitioningRef.current) {
+    if (!expandedRef.current && !isTransitioningRef.current && !showVolumeHud) {
       updateGeometry(false, dynamicCollapsedWidth);
     }
-  }, [dynamicCollapsedWidth]);
+  }, [dynamicCollapsedWidth, showVolumeHud]);
 
   // Auto-scroll lyrics to keep active line centered
   useEffect(() => {
@@ -912,9 +1047,54 @@ export default function App() {
                 isCompact ? "h-[22px] px-2.5 py-0.5" : "h-[36px] px-3.5 py-1.5"
               }`}
             >
-              {isCompact ? (
-                /* Compact Pill Content */
-                <div className="flex items-center justify-between w-full h-full select-none">
+              <AnimatePresence mode="wait" initial={false}>
+                {showVolumeHud ? (
+                  <motion.div
+                    key="volume-hud-view"
+                    initial={{ opacity: 0, scale: 0.96 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.96 }}
+                    transition={{ duration: 0.14 }}
+                    className="flex items-center justify-between w-full h-full gap-2.5 select-none px-0.5"
+                  >
+                    <div className="shrink-0 flex items-center">
+                      {audioStatus?.is_muted || (audioStatus?.master_volume ?? 0) === 0 ? (
+                        <VolumeX className="w-3.5 h-3.5 text-rose-400" />
+                      ) : (
+                        <Volume2
+                          className="w-3.5 h-3.5"
+                          style={{ color: settings.accentColor }}
+                        />
+                      )}
+                    </div>
+
+                    <div className="flex-1 h-1.5 bg-white/10 rounded-full overflow-hidden relative">
+                      <motion.div
+                        className="h-full rounded-full"
+                        style={{
+                          backgroundColor: (audioStatus?.is_muted ?? false) ? "#f43f5e" : settings.accentColor,
+                        }}
+                        animate={{
+                          width: `${Math.round(((audioStatus?.is_muted ? 0 : audioStatus?.master_volume) ?? 0) * 100)}%`,
+                        }}
+                        transition={{ type: "spring", stiffness: 350, damping: 28 }}
+                      />
+                    </div>
+
+                    <span className="font-mono text-[11px] tabular-nums font-semibold text-neutral-300 w-8 text-right shrink-0">
+                      {audioStatus?.is_muted ? "0%" : `${Math.round((audioStatus?.master_volume ?? 0) * 100)}%`}
+                    </span>
+                  </motion.div>
+                ) : isCompact ? (
+                  /* Compact Pill Content */
+                  <motion.div
+                    key="compact-view"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.14 }}
+                    className="flex items-center justify-between w-full h-full select-none"
+                  >
                   <div className="flex items-center gap-1.5 shrink-0">
                     {media.has_media && media.is_playing ? (
                       <div className="flex items-end gap-[1.5px] h-2.5 shrink-0">
@@ -965,10 +1145,17 @@ export default function App() {
                       {time}
                     </span>
                   </div>
-                </div>
+                </motion.div>
               ) : (
                 /* Normal Collapsed View */
-                <>
+                <motion.div
+                  key="normal-view"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.14 }}
+                  className="flex items-center justify-between w-full h-full"
+                >
                   <div className="flex items-center gap-2 overflow-hidden flex-1 min-w-0 mr-2">
                     {activeModule === "media" ? (
                       <>
@@ -1160,9 +1347,10 @@ export default function App() {
                       {time}
                     </span>
                   </div>
-                </>
+                </motion.div>
               )}
-            </motion.div>
+            </AnimatePresence>
+          </motion.div>
           ) : (
             /* Expanded View */
             <motion.div
@@ -1175,7 +1363,7 @@ export default function App() {
                 width: targetWidth,
                 height: targetHeight,
               }}
-              className="w-full h-full relative group/expanded flex flex-col justify-between p-4 pb-4 overflow-hidden"
+              className="w-full h-full relative group/expanded flex flex-col justify-between p-4 pb-3 overflow-hidden"
             >
               {/* Header Bar */}
               <div
@@ -1291,6 +1479,26 @@ export default function App() {
                     </div>
                   )}
 
+                  {/* Audio Switcher Button */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowAudioSwitcher((prev) => !prev);
+                    }}
+                    title="Audio Devices & Master Volume"
+                    className={`p-1.5 rounded-lg transition-colors ${
+                      showAudioSwitcher
+                        ? "bg-white/20 text-white"
+                        : "text-neutral-400 hover:text-white hover:bg-white/10"
+                    }`}
+                  >
+                    {audioStatus?.is_muted || audioStatus?.master_volume === 0 ? (
+                      <VolumeX className="w-3.5 h-3.5 text-rose-400" />
+                    ) : (
+                      <Volume2 className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+
                   {/* Settings Button */}
                   <button
                     onClick={handleOpenSettings}
@@ -1389,6 +1597,26 @@ export default function App() {
                           ? media.artist || media.album || "Unknown Artist"
                           : `System Clock: ${time}`}
                       </span>
+
+                      {audioStatus?.current_output_name && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowAudioSwitcher(true);
+                          }}
+                          className="flex items-center gap-1 mt-1 px-2 py-0.5 rounded-full bg-white/5 hover:bg-white/10 border border-white/5 transition-all text-[10px] text-neutral-400 hover:text-neutral-200 w-fit max-w-[200px]"
+                          title="Switch audio output device"
+                        >
+                          <Volume2
+                            className="w-2.5 h-2.5 shrink-0"
+                            style={{ color: settings.accentColor }}
+                          />
+                          <span className="truncate">
+                            {audioStatus.current_output_name}
+                          </span>
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -1527,7 +1755,7 @@ export default function App() {
               )}
 
               {/* Bottom Playback Controls */}
-              <div className="flex items-center justify-center gap-5 pt-2 pb-1 border-t border-white/5">
+              <div className="flex items-center justify-center gap-5 pt-1.5 pb-0.5 border-t border-white/5">
                 <button
                   onClick={prevTrack}
                   disabled={!media.has_media}
@@ -1595,6 +1823,18 @@ export default function App() {
           )}
         </AnimatePresence>
       </div>
+
+      {/* Audio Quick Switcher Popover Overlay */}
+      <AnimatePresence>
+        {showAudioSwitcher && (
+          <AudioSwitcher
+            accentColor={settings.accentColor}
+            fontSizeScale={settings.fontSizeScale}
+            onClose={() => setShowAudioSwitcher(false)}
+            onStatusChange={setAudioStatus}
+          />
+        )}
+      </AnimatePresence>
     </motion.div>
   )}
         </AnimatePresence>
