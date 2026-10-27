@@ -82,6 +82,13 @@ export default function SettingsApp() {
       const next = { ...prev, ...patch };
       saveSettings(next);
       emit("notch-settings-update", next).catch(() => {});
+      if (patch.targetMonitor !== undefined) {
+        invoke("set_notch_size", {
+          width: 760,
+          height: 400,
+          targetMonitor: patch.targetMonitor,
+        }).catch(() => {});
+      }
       return next;
     });
   };

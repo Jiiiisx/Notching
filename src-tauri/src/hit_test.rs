@@ -1,8 +1,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::WebviewWindow;
+use tauri::{Emitter, WebviewWindow};
 use windows::Win32::Foundation::{HWND, POINT, RECT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetWindowRect};
 
 #[derive(Debug, Clone)]
@@ -46,6 +47,7 @@ pub fn start_cursor_hit_test(
         state.is_ignoring_cursor.store(true, Ordering::Relaxed);
 
         let mut last_ignoring = true;
+        let mut was_dragging_over_pill = false;
 
         loop {
             std::thread::sleep(Duration::from_millis(16)); // ~60 Hz
@@ -96,6 +98,20 @@ pub fn start_cursor_hit_test(
                 && pt.x <= pill_right
                 && pt.y >= pill_top
                 && pt.y <= pill_bottom;
+
+            if inside_pill {
+                let lbutton_down = unsafe {
+                    (GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) != 0
+                };
+                if lbutton_down && !was_dragging_over_pill {
+                    was_dragging_over_pill = true;
+                    let _ = window.emit("notch-drag-hover-pill", true);
+                } else if !lbutton_down {
+                    was_dragging_over_pill = false;
+                }
+            } else {
+                was_dragging_over_pill = false;
+            }
 
             if inside_pill && last_ignoring {
                 let _ = window.set_ignore_cursor_events(false);

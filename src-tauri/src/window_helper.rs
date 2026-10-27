@@ -36,7 +36,13 @@ pub fn find_target_monitor(
 
     if let Some(tid) = target_id {
         if !tid.is_empty() && tid != "primary" {
-            if let Some(m) = monitors.iter().find(|m| m.name().is_some_and(|n| n == tid)) {
+            if let Some(m) = monitors.iter().find(|m| {
+                m.name().is_some_and(|n| {
+                    n == tid
+                        || n.trim_start_matches(r"\\.\") == tid.trim_start_matches(r"\\.\")
+                        || n.replace('\\', "") == tid.replace('\\', "")
+                })
+            }) {
                 return Some(m.clone());
             }
         }
@@ -162,20 +168,18 @@ pub fn reposition_notch(
         let mon_size = mon.size();
         let mon_pos = mon.position();
 
-        let mon_width_logical = mon_size.width as f64 / scale;
-        let mon_x_logical = mon_pos.x as f64 / scale;
-        let mon_y_logical = mon_pos.y as f64 / scale;
-
-        let center_x = mon_x_logical + (mon_width_logical - width) / 2.0;
-        let top_y = mon_y_logical;
-
         if let Ok(hwnd) = window.hwnd() {
-            let phys_x = (center_x * scale).round() as i32;
-            let phys_y = (top_y * scale).round() as i32;
-            let phys_w = (width * scale).round() as i32;
-            let phys_h = (height * scale).round() as i32;
             unsafe {
+                let _ = windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(
+                    windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                );
                 let hwnd_val = HWND(hwnd.0 as _);
+
+                let phys_w = (width * scale).round() as i32;
+                let phys_h = (height * scale).round() as i32;
+                let phys_x = mon_pos.x + (mon_size.width as i32 - phys_w) / 2;
+                let phys_y = mon_pos.y;
+
                 let mut current_rect = RECT::default();
                 let _ = GetWindowRect(hwnd_val, &mut current_rect);
                 if current_rect.left == phys_x
@@ -185,6 +189,7 @@ pub fn reposition_notch(
                 {
                     return;
                 }
+
                 let _ = SetWindowPos(
                     hwnd_val,
                     Some(HWND_TOPMOST),
@@ -194,8 +199,36 @@ pub fn reposition_notch(
                     phys_h,
                     SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSENDCHANGING,
                 );
+
+                // When moving across monitors with different DPI, Windows fires WM_DPICHANGED
+                // which causes Tao's wndproc to scale the window using its own suggested rect,
+                // shifting it off-center. We re-verify the rect immediately; if altered,
+                // re-apply the exact centered coordinates (now on the target monitor, so no
+                // second WM_DPICHANGED is dispatched).
+                let mut after_rect = RECT::default();
+                let _ = GetWindowRect(hwnd_val, &mut after_rect);
+                if after_rect.left != phys_x
+                    || after_rect.top != phys_y
+                    || (after_rect.right - after_rect.left) != phys_w
+                    || (after_rect.bottom - after_rect.top) != phys_h
+                {
+                    let _ = SetWindowPos(
+                        hwnd_val,
+                        Some(HWND_TOPMOST),
+                        phys_x,
+                        phys_y,
+                        phys_w,
+                        phys_h,
+                        SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSENDCHANGING,
+                    );
+                }
             }
         } else {
+            let mon_width_logical = mon_size.width as f64 / scale;
+            let mon_x_logical = mon_pos.x as f64 / scale;
+            let mon_y_logical = mon_pos.y as f64 / scale;
+            let center_x = mon_x_logical + (mon_width_logical - width) / 2.0;
+            let top_y = mon_y_logical;
             let _ = window.set_size(LogicalSize::new(width, height));
             let _ = window.set_position(LogicalPosition::new(center_x, top_y));
         }

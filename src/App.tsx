@@ -17,8 +17,10 @@ import {
   ListMusic,
   Settings,
   Zap,
+  Layers,
 } from "lucide-react";
 import { TodoList, TodoItem } from "./TodoList";
+import { Shelf } from "./Shelf";
 import {
   NotchSettings,
   loadSettings,
@@ -126,8 +128,13 @@ export default function App() {
   const [lyricsLoading, setLyricsLoading] = useState(false);
   const lastFetchedTrackRef = useRef<string>("");
 
-  const [activeModule, setActiveModule] = useState<"media" | "todo">(() => {
-    return (localStorage.getItem("notch_active_module") as "media" | "todo") || "media";
+  type AppModule = "media" | "todo" | "shelf";
+  const MODULES: AppModule[] = ["media", "todo", "shelf"];
+
+  const [activeModule, setActiveModule] = useState<AppModule>(() => {
+    const saved = localStorage.getItem("notch_active_module");
+    if (saved === "media" || saved === "todo" || saved === "shelf") return saved;
+    return "media";
   });
 
   const [todos, setTodos] = useState<TodoItem[]>(() => {
@@ -181,9 +188,19 @@ export default function App() {
     setTodos((prev) => prev.filter((t) => !t.completed));
   };
 
-  const switchModule = (target?: "media" | "todo") => {
-    const next = target ?? (activeModule === "media" ? "todo" : "media");
-    setActiveModule(next);
+  const switchModule = (target?: AppModule, direction?: "next" | "prev") => {
+    if (target) {
+      setActiveModule(target);
+      return;
+    }
+    const currentIndex = MODULES.indexOf(activeModule);
+    if (direction === "prev") {
+      const prevIndex = (currentIndex - 1 + MODULES.length) % MODULES.length;
+      setActiveModule(MODULES[prevIndex]);
+    } else {
+      const nextIndex = (currentIndex + 1) % MODULES.length;
+      setActiveModule(MODULES[nextIndex]);
+    }
   };
 
   const lastWheelTimeRef = useRef(0);
@@ -194,27 +211,46 @@ export default function App() {
     if (!expandedRef.current) {
       if (Math.abs(e.deltaX) > 10 || Math.abs(e.deltaY) > 10) {
         lastWheelTimeRef.current = now;
-        switchModule();
+        if (e.deltaX > 0 || e.deltaY > 0) switchModule(undefined, "next");
+        else switchModule(undefined, "prev");
       }
     } else {
       if (Math.abs(e.deltaX) > 15) {
         lastWheelTimeRef.current = now;
-        if (e.deltaX > 0) switchModule("todo");
-        else switchModule("media");
+        if (e.deltaX > 0) switchModule(undefined, "next");
+        else switchModule(undefined, "prev");
         return;
       }
+
+      const target = e.target as HTMLElement;
+      const isTodoScroll = target.closest(".todo-list-scroll");
+      const isShelfScroll = target.closest(".shelf-scroll");
 
       if (activeModule === "media") {
         if (Math.abs(e.deltaY) > 15) {
           lastWheelTimeRef.current = now;
-          switchModule("todo");
+          if (e.deltaY > 0) switchModule("todo");
+          else switchModule("shelf");
         }
       } else if (activeModule === "todo") {
-        const target = e.target as HTMLElement;
-        const isScrollable = target.closest(".todo-list-scroll");
-        if (!isScrollable || e.deltaY < -20) {
-          lastWheelTimeRef.current = now;
-          switchModule("media");
+        if (!isTodoScroll) {
+          if (e.deltaY > 15) {
+            lastWheelTimeRef.current = now;
+            switchModule("shelf");
+          } else if (e.deltaY < -15) {
+            lastWheelTimeRef.current = now;
+            switchModule("media");
+          }
+        }
+      } else if (activeModule === "shelf") {
+        if (!isShelfScroll) {
+          if (e.deltaY < -15) {
+            lastWheelTimeRef.current = now;
+            switchModule("todo");
+          } else if (e.deltaY > 15) {
+            lastWheelTimeRef.current = now;
+            switchModule("media");
+          }
         }
       }
     }
@@ -316,6 +352,55 @@ export default function App() {
       }, 1000);
     }, delay);
   };
+
+  // Auto-expand and switch to shelf on drag hover over collapsed notch or native drag-enter
+  useEffect(() => {
+    let unlistenHover: (() => void) | undefined;
+    let unlistenEnter: (() => void) | undefined;
+    let unlistenLeave: (() => void) | undefined;
+    let unlistenDrop: (() => void) | undefined;
+
+    const setupDragListeners = async () => {
+      unlistenHover = await listen<boolean>("notch-drag-hover-pill", () => {
+        cancelCollapse();
+        if (!expandedRef.current) {
+          isTransitioningRef.current = true;
+          expandedRef.current = true;
+          setExpanded(true);
+          setActiveModule("shelf");
+        }
+      });
+
+      unlistenEnter = await listen<{ paths?: string[]; x: number; y: number }>("notch-drag-enter", () => {
+        cancelCollapse();
+        if (!expandedRef.current) {
+          isTransitioningRef.current = true;
+          expandedRef.current = true;
+          setExpanded(true);
+          setActiveModule("shelf");
+        }
+      });
+
+      unlistenLeave = await listen("notch-drag-leave", () => {
+        if (expandedRef.current) {
+          scheduleCollapse(1200);
+        }
+      });
+
+      unlistenDrop = await listen("notch-drag-drop", () => {
+        cancelCollapse();
+      });
+    };
+
+    setupDragListeners();
+
+    return () => {
+      if (unlistenHover) unlistenHover();
+      if (unlistenEnter) unlistenEnter();
+      if (unlistenLeave) unlistenLeave();
+      if (unlistenDrop) unlistenDrop();
+    };
+  }, []);
 
   const handleMouseEnter = () => {
     cancelCollapse();
@@ -640,14 +725,14 @@ export default function App() {
   // Distinct width & height per view module: expanded widths and heights can differ freely
   const targetWidth = useMemo(() => {
     if (!expanded) return isCompact ? 114 : dynamicCollapsedWidth;
-    if (activeModule === "todo") return 520;
+    if (activeModule === "todo" || activeModule === "shelf") return 520;
     if (expandedView === "lyrics" || expandedView === "queue") return 480;
     return 460;
   }, [expanded, isCompact, dynamicCollapsedWidth, activeModule, expandedView]);
 
   const targetHeight = useMemo(() => {
     if (!expanded) return isCompact ? 22 : dims.collapsed_height;
-    if (activeModule === "todo") return 290;
+    if (activeModule === "todo" || activeModule === "shelf") return 290;
     if (expandedView === "lyrics" || expandedView === "queue") return 320;
     return 210;
   }, [expanded, isCompact, dims.collapsed_height, activeModule, expandedView]);
@@ -768,6 +853,27 @@ export default function App() {
         onMouseEnter={handleMouseEnter}
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
+        onDragEnter={(e) => {
+          e.preventDefault();
+          cancelCollapse();
+          if (!expandedRef.current) {
+            isTransitioningRef.current = true;
+            expandedRef.current = true;
+            setExpanded(true);
+            setActiveModule("shelf");
+          }
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+          cancelCollapse();
+          if (!expandedRef.current) {
+            isTransitioningRef.current = true;
+            expandedRef.current = true;
+            setExpanded(true);
+            setActiveModule("shelf");
+          }
+        }}
         onClick={() => {
           if (!expanded) handleMouseEnter();
         }}
@@ -943,7 +1049,7 @@ export default function App() {
                           </span>
                         )}
                       </>
-                    ) : (
+                    ) : activeModule === "todo" ? (
                       /* Todo Collapsed Item */
                       <div className="flex items-center gap-2 min-w-0 flex-1">
                         <ListTodo
@@ -964,37 +1070,23 @@ export default function App() {
                             : "No tasks yet"}
                         </span>
                       </div>
+                    ) : (
+                      /* Shelf Collapsed Item */
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <Layers
+                          className="w-3.5 h-3.5 shrink-0"
+                          style={{ color: settings.accentColor }}
+                        />
+                        <span
+                          className="truncate select-none font-medium text-neutral-300"
+                          style={{
+                            fontSize: `${12 * settings.fontSizeScale}px`,
+                          }}
+                        >
+                          Quick Launch & File Shelf
+                        </span>
+                      </div>
                     )}
-                  </div>
-
-                  {/* Hover Quick Module Carousel Switcher */}
-                  <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 mr-1.5 z-10">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        switchModule("media");
-                      }}
-                      title="Media Player"
-                      className={`p-0.5 rounded hover:bg-white/10 transition-colors ${
-                        activeModule === "media" ? "text-white" : "text-neutral-500 hover:text-neutral-300"
-                      }`}
-                    >
-                      <ChevronLeft className="w-2.5 h-2.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        switchModule("todo");
-                      }}
-                      title="To-Do List"
-                      className={`p-0.5 rounded hover:bg-white/10 transition-colors ${
-                        activeModule === "todo" ? "text-white" : "text-neutral-500 hover:text-neutral-300"
-                      }`}
-                    >
-                      <ChevronRight className="w-2.5 h-2.5" />
-                    </button>
                   </div>
 
                   {/* Right Status: Sleek Battery + Modern Digital Clock */}
@@ -1092,7 +1184,7 @@ export default function App() {
                   if (now - lastWheelTimeRef.current < 260) return;
                   if (Math.abs(e.deltaX) > 10 || Math.abs(e.deltaY) > 10) {
                     lastWheelTimeRef.current = now;
-                    switchModule();
+                    switchModule(undefined, e.deltaY > 0 || e.deltaX > 0 ? "next" : "prev");
                   }
                 }}
                 className="flex items-center justify-between pb-2 border-b border-white/5"
@@ -1108,6 +1200,8 @@ export default function App() {
                   <span className="text-[11px] font-mono tracking-wider text-neutral-400 uppercase">
                     {activeModule === "todo"
                       ? "To-Do List"
+                      : activeModule === "shelf"
+                      ? "Quick Shelf & Stash"
                       : expandedView === "queue"
                       ? "Queue / Playlist"
                       : expandedView === "lyrics"
@@ -1140,6 +1234,16 @@ export default function App() {
                       title="To-Do List"
                       className={`w-1.5 h-1.5 rounded-full transition-all ${
                         activeModule === "todo"
+                          ? "bg-white scale-125 shadow-[0_0_6px_rgba(255,255,255,0.8)]"
+                          : "bg-neutral-600 hover:bg-neutral-400"
+                      }`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => switchModule("shelf")}
+                      title="Quick Shelf & Stash"
+                      className={`w-1.5 h-1.5 rounded-full transition-all ${
+                        activeModule === "shelf"
                           ? "bg-white scale-125 shadow-[0_0_6px_rgba(255,255,255,0.8)]"
                           : "bg-neutral-600 hover:bg-neutral-400"
                       }`}
@@ -1209,28 +1313,30 @@ export default function App() {
               </div>
 
               {/* Floating Side Arrows for Next/Prev Module */}
-              {activeModule === "todo" && (
+              {activeModule !== "media" && (
                 <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    switchModule("media");
+                    if (activeModule === "shelf") switchModule("todo");
+                    else if (activeModule === "todo") switchModule("media");
                   }}
-                  title="Switch to Media Player"
+                  title={activeModule === "shelf" ? "Switch to To-Do List" : "Switch to Media Player"}
                   className="absolute left-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-neutral-900/85 hover:bg-white/20 text-neutral-300 hover:text-white border border-white/10 transition-all shadow-xl z-30 active:scale-90"
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </button>
               )}
 
-              {activeModule === "media" && (
+              {activeModule !== "shelf" && (
                 <button
                   type="button"
                   onClick={(e) => {
                     e.stopPropagation();
-                    switchModule("todo");
+                    if (activeModule === "media") switchModule("todo");
+                    else if (activeModule === "todo") switchModule("shelf");
                   }}
-                  title="Switch to To-Do List"
+                  title={activeModule === "media" ? "Switch to To-Do List" : "Switch to Quick Shelf"}
                   className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-neutral-900/85 hover:bg-white/20 text-neutral-300 hover:text-white border border-white/10 transition-all shadow-xl z-30 active:scale-90"
                 >
                   <ChevronRight className="w-4 h-4" />
@@ -1451,7 +1557,7 @@ export default function App() {
                 </button>
               </div>
             </motion.div>
-          ) : (
+          ) : activeModule === "todo" ? (
             /* To-Do List Module */
             <motion.div
               key="todo-module"
@@ -1467,6 +1573,21 @@ export default function App() {
                 onAdd={handleAddTodo}
                 onDelete={handleDeleteTodo}
                 onClearCompleted={handleClearCompletedTodos}
+                accentColor={settings.accentColor}
+                fontSizeScale={settings.fontSizeScale}
+              />
+            </motion.div>
+          ) : (
+            /* Quick Shelf & Stash Module */
+            <motion.div
+              key="shelf-module"
+              initial={{ opacity: 0, x: 24 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 24 }}
+              transition={{ duration: 0.18 }}
+              className="h-full pt-1 pl-5 pr-2"
+            >
+              <Shelf
                 accentColor={settings.accentColor}
                 fontSizeScale={settings.fontSizeScale}
               />
