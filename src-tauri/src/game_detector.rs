@@ -77,7 +77,7 @@ use crate::window_helper;
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED};
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, TreeScope_Descendants, UIA_ControlTypePropertyId,
-    UIA_TabItemControlTypeId, UIA_ButtonControlTypeId,
+    UIA_TabItemControlTypeId,
 };
 use windows::Win32::System::Variant::VARIANT;
 
@@ -160,31 +160,25 @@ fn is_tab_behind_notch(
             return false;
         }
 
-        let notch_left = center_x - 175;
-        let notch_right = center_x + 175;
+        let notch_left = center_x - 120;
+        let notch_right = center_x + 120;
 
         let var_tab = VARIANT::from(UIA_TabItemControlTypeId.0 as i32);
-        let var_btn = VARIANT::from(UIA_ButtonControlTypeId.0 as i32);
-        if let (Ok(c1), Ok(c2)) = (
-            auto.CreatePropertyCondition(UIA_ControlTypePropertyId, &var_tab),
-            auto.CreatePropertyCondition(UIA_ControlTypePropertyId, &var_btn),
-        ) {
-            if let Ok(cond) = auto.CreateOrCondition(&c1, &c2) {
-                if let Ok(fg_elem) = auto.ElementFromHandle(fg) {
-                    if let Ok(items) = fg_elem.FindAll(TreeScope_Descendants, &cond) {
-                        if let Ok(count) = items.Length() {
-                            for i in 0..count {
-                                if let Ok(item) = items.GetElement(i) {
-                                    if let Ok(item_rect) = item.CurrentBoundingRectangle() {
-                                        // Header must be near the top edge of monitor
-                                        if item_rect.top >= mi.rcMonitor.top - 10
-                                            && item_rect.top <= mi.rcMonitor.top + 45
-                                            && (item_rect.bottom - item_rect.top) >= 15
-                                        {
-                                            // Check if tab or new-tab button overlaps the notch area
-                                            if item_rect.right >= notch_left && item_rect.left <= notch_right {
-                                                return true;
-                                            }
+        if let Ok(cond) = auto.CreatePropertyCondition(UIA_ControlTypePropertyId, &var_tab) {
+            if let Ok(fg_elem) = auto.ElementFromHandle(fg) {
+                if let Ok(items) = fg_elem.FindAll(TreeScope_Descendants, &cond) {
+                    if let Ok(count) = items.Length() {
+                        for i in 0..count {
+                            if let Ok(item) = items.GetElement(i) {
+                                if let Ok(item_rect) = item.CurrentBoundingRectangle() {
+                                    // Header must be near the top edge of monitor
+                                    if item_rect.top >= mi.rcMonitor.top - 10
+                                        && item_rect.top <= mi.rcMonitor.top + 45
+                                        && (item_rect.bottom - item_rect.top) >= 15
+                                    {
+                                        // Check if tab overlaps the notch area
+                                        if item_rect.right >= notch_left && item_rect.left <= notch_right {
+                                            return true;
                                         }
                                     }
                                 }
@@ -307,7 +301,7 @@ pub fn start_game_detector(app: AppHandle, state: Arc<GameDetectorState>) {
         let mut game_clear_counter = 0;
 
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(800));
+            std::thread::sleep(std::time::Duration::from_millis(500));
 
             let main_win = match app.get_webview_window("main") {
                 Some(w) => w,
@@ -501,7 +495,7 @@ pub fn start_game_detector(app: AppHandle, state: Arc<GameDetectorState>) {
                     }
                 } else if was_smart_compact {
                     uncompact_counter += 1;
-                    if uncompact_counter >= 3 {
+                    if uncompact_counter >= 1 {
                         was_smart_compact = false;
                         uncompact_counter = 0;
                         let _ = app.emit("smart-avoidance-status", serde_json::json!({ "compact": false }));

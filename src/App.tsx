@@ -22,6 +22,9 @@ import {
   VolumeX,
   Activity,
   Monitor,
+  Pin,
+  X,
+  Trash2,
 } from "lucide-react";
 import { TodoList, TodoItem } from "./TodoList";
 import { Shelf } from "./Shelf";
@@ -218,93 +221,49 @@ export default function App() {
 
   const lastWheelTimeRef = useRef(0);
   const handleContainerWheel = (e: React.WheelEvent) => {
-    const now = Date.now();
-    if (now - lastWheelTimeRef.current < 240) return;
-
+    // If notch is collapsed, scrolling vertically or horizontally cycles modules
     if (!expandedRef.current) {
+      const now = Date.now();
+      if (now - lastWheelTimeRef.current < 200) return;
       if (Math.abs(e.deltaX) > 10 || Math.abs(e.deltaY) > 10) {
         lastWheelTimeRef.current = now;
         if (e.deltaX > 0 || e.deltaY > 0) switchModule(undefined, "next");
         else switchModule(undefined, "prev");
       }
-    } else {
-      if (Math.abs(e.deltaX) > 15) {
+      return;
+    }
+
+    // When expanded:
+    const target = e.target as HTMLElement;
+    const isScrollable = target.closest(
+      ".queue-scroll, .lyrics-scroll, .todo-list-scroll, .shelf-scroll, [data-scrollable='true']"
+    ) as HTMLElement | null;
+
+    // 1. If mouse is over any scrollable list (Queue, Lyrics, Todo list, Shelf):
+    // Vertical scrolling is 100% reserved for smooth native scrolling; never switch module!
+    if (isScrollable) {
+      if (Math.abs(e.deltaX) > 28 && Math.abs(e.deltaX) > Math.abs(e.deltaY) * 2) {
+        const now = Date.now();
+        if (now - lastWheelTimeRef.current < 260) return;
         lastWheelTimeRef.current = now;
         if (e.deltaX > 0) switchModule(undefined, "next");
         else switchModule(undefined, "prev");
-        return;
       }
+      return;
+    }
 
-      const target = e.target as HTMLElement;
-      const isTodoScroll = target.closest(".todo-list-scroll") as HTMLElement | null;
-      const isShelfScroll = target.closest(".shelf-scroll") as HTMLElement | null;
+    // 2. If mouse is over non-scrollable area (PerformanceHUD, navbar/header, background):
+    const now = Date.now();
+    if (now - lastWheelTimeRef.current < 240) return;
 
-      if (activeModule === "media") {
-        if (Math.abs(e.deltaY) > 15) {
-          lastWheelTimeRef.current = now;
-          if (e.deltaY > 0) switchModule("todo");
-          else switchModule("perf");
-        }
-      } else if (activeModule === "todo") {
-        let canScrollY = false;
-        if (isTodoScroll) {
-          const hasOverflow = isTodoScroll.scrollHeight > isTodoScroll.clientHeight + 2;
-          if (hasOverflow) {
-            // Scroll inside list if within boundaries
-            if (e.deltaY < -15 && isTodoScroll.scrollTop > 1) {
-              canScrollY = true;
-            } else if (
-              e.deltaY > 15 &&
-              isTodoScroll.scrollTop + isTodoScroll.clientHeight < isTodoScroll.scrollHeight - 2
-            ) {
-              canScrollY = true;
-            }
-          }
-        }
-
-        // If not actively scrolling tasks (empty list, few items, or reached top/bottom edge)
-        if (!canScrollY) {
-          if (e.deltaY > 15) {
-            lastWheelTimeRef.current = now;
-            switchModule("shelf");
-          } else if (e.deltaY < -15) {
-            lastWheelTimeRef.current = now;
-            switchModule("media");
-          }
-        }
-      } else if (activeModule === "shelf") {
-        let canScrollY = false;
-        if (isShelfScroll) {
-          const hasOverflow = isShelfScroll.scrollHeight > isShelfScroll.clientHeight + 2;
-          if (hasOverflow) {
-            if (e.deltaY < -15 && isShelfScroll.scrollTop > 1) {
-              canScrollY = true;
-            } else if (
-              e.deltaY > 15 &&
-              isShelfScroll.scrollTop + isShelfScroll.clientHeight < isShelfScroll.scrollHeight - 2
-            ) {
-              canScrollY = true;
-            }
-          }
-        }
-
-        // If not actively scrolling shelf items, propagate boundary switch
-        if (!canScrollY) {
-          if (e.deltaY < -15) {
-            lastWheelTimeRef.current = now;
-            switchModule("todo");
-          } else if (e.deltaY > 15) {
-            lastWheelTimeRef.current = now;
-            switchModule("perf");
-          }
-        }
-      } else if (activeModule === "perf") {
-        if (Math.abs(e.deltaY) > 15) {
-          lastWheelTimeRef.current = now;
-          if (e.deltaY > 0) switchModule("media");
-          else switchModule("shelf");
-        }
-      }
+    if (Math.abs(e.deltaX) > 18) {
+      lastWheelTimeRef.current = now;
+      if (e.deltaX > 0) switchModule(undefined, "next");
+      else switchModule(undefined, "prev");
+    } else if (Math.abs(e.deltaY) > 18) {
+      lastWheelTimeRef.current = now;
+      if (e.deltaY > 0) switchModule(undefined, "next");
+      else switchModule(undefined, "prev");
     }
   };
 
@@ -317,6 +276,7 @@ export default function App() {
   const notchRef = useRef<HTMLDivElement | null>(null);
   const lyricsContainerRef = useRef<HTMLDivElement | null>(null);
   const [isSmartCompact, setIsSmartCompact] = useState(false);
+  const [isPinned, setIsPinned] = useState(false);
   const [dropY, setDropY] = useState(0);
   const isDroppingRef = useRef(false);
   const [availableMonitors, setAvailableMonitors] = useState<{
@@ -511,6 +471,7 @@ export default function App() {
     setShowAudioSwitcher(false);
     isTransitioningRef.current = false;
     updateGeometry(false, isCompact ? 114 : dynamicCollapsedWidth, isCompact ? 22 : dims.collapsed_height);
+    invoke("trim_memory").catch(() => {});
   };
 
   // Fetch audio status on app mount and on expand
@@ -601,9 +562,11 @@ export default function App() {
     };
   }, []);
 
-  const scheduleCollapse = (delay = 200) => {
-    cancelCollapse();
+  const scheduleCollapse = (delay = 140) => {
+    if (isPinned) return;
+    if (collapseTimerRef.current) return;
     collapseTimerRef.current = window.setTimeout(() => {
+      collapseTimerRef.current = null;
       isTransitioningRef.current = true;
       expandedRef.current = false;
       setExpanded(false);
@@ -675,8 +638,8 @@ export default function App() {
   const handleMouseMove = (e: React.MouseEvent) => {
     if (isInsideNotch(e.clientX, e.clientY)) {
       cancelCollapse();
-    } else if (expandedRef.current) {
-      scheduleCollapse(180);
+    } else if (expandedRef.current && !isPinned && !collapseTimerRef.current) {
+      scheduleCollapse(140);
     }
   };
 
@@ -684,13 +647,15 @@ export default function App() {
     if (isInsideNotch(e.clientX, e.clientY)) {
       return;
     }
-    if (expandedRef.current) {
-      scheduleCollapse(180);
+    if (expandedRef.current && !isPinned) {
+      cancelCollapse();
+      scheduleCollapse(140);
     }
   };
 
   const handleManualCollapse = () => {
     cancelCollapse();
+    setIsPinned(false);
     isTransitioningRef.current = true;
     expandedRef.current = false;
     setExpanded(false);
@@ -702,17 +667,16 @@ export default function App() {
   // Ensure notch collapses when cursor leaves the native window entirely
   useEffect(() => {
     const handleWindowLeave = () => {
-      if (expandedRef.current) {
-        scheduleCollapse(150);
+      if (expandedRef.current && !isPinned) {
+        cancelCollapse();
+        scheduleCollapse(80);
       }
     };
     document.addEventListener("mouseleave", handleWindowLeave);
-    window.addEventListener("blur", handleWindowLeave);
     return () => {
       document.removeEventListener("mouseleave", handleWindowLeave);
-      window.removeEventListener("blur", handleWindowLeave);
     };
-  }, [expanded]);
+  }, [expanded, isPinned]);
 
   // Switch between expanded views
   const switchView = (e: React.MouseEvent, view: "player" | "lyrics" | "queue") => {
@@ -839,14 +803,17 @@ export default function App() {
   // Smooth position interpolation between 500ms sync ticks
   useEffect(() => {
     if (!media.is_playing) return;
+    if (!expanded && !showLyrics) return;
+    const intervalMs = expanded ? (expandedView === "player" || expandedView === "lyrics" ? 50 : 250) : 500;
+    const stepSec = intervalMs / 1000;
     const interval = setInterval(() => {
       setPlaybackPos((prev) => {
         if (media.duration_sec > 0 && prev >= media.duration_sec) return prev;
-        return prev + 0.05;
+        return prev + stepSec;
       });
-    }, 50);
+    }, intervalMs);
     return () => clearInterval(interval);
-  }, [media.is_playing, media.duration_sec]);
+  }, [media.is_playing, media.duration_sec, expanded, expandedView, showLyrics]);
 
   // Fetch lyrics from LRCLIB when track changes
   useEffect(() => {
@@ -879,9 +846,14 @@ export default function App() {
       if (!cleanArtist) cleanArtist = parts[1].trim();
     }
 
+    const durParam =
+      media.duration_sec > 0 ? `&duration=${Math.round(media.duration_sec)}` : "";
+    const albumParam = media.album
+      ? `&album_name=${encodeURIComponent(media.album)}`
+      : "";
     const fetchUrl = `https://lrclib.net/api/get?track_name=${encodeURIComponent(
       cleanTitle
-    )}&artist_name=${encodeURIComponent(cleanArtist)}`;
+    )}&artist_name=${encodeURIComponent(cleanArtist)}${albumParam}${durParam}`;
 
     fetch(fetchUrl, {
       headers: {
@@ -905,7 +877,17 @@ export default function App() {
         if (searchRes.ok) {
           const list = await searchRes.json();
           if (Array.isArray(list) && list.length > 0) {
-            return list[0];
+            // Prefer entry with syncedLyrics matching track duration
+            const synced = list.filter((item: any) => item.syncedLyrics);
+            if (synced.length > 0 && media.duration_sec > 0) {
+              synced.sort(
+                (a: any, b: any) =>
+                  Math.abs(a.duration - media.duration_sec) -
+                  Math.abs(b.duration - media.duration_sec)
+              );
+              return synced[0];
+            }
+            return synced[0] || list[0];
           }
         }
         return null;
@@ -992,7 +974,7 @@ export default function App() {
     if (showAudioSwitcher) return 480;
     if (activeModule === "todo" || activeModule === "shelf") return 520;
     if (expandedView === "lyrics" || expandedView === "queue") return 480;
-    if (activeModule === "perf") return 470;
+    if (activeModule === "perf") return 480;
     return 460;
   }, [expanded, isCompact, dynamicCollapsedWidth, showVolumeHud, showAudioSwitcher, activeModule, expandedView]);
 
@@ -1077,6 +1059,34 @@ export default function App() {
     }
   };
 
+  const handlePlayQueueTrack = async (uri: string) => {
+    if (!uri) return;
+    try {
+      await invoke("spotify_queue_action", { action: "play", uri });
+    } catch (err) {
+      console.error("Failed to play queue track:", err);
+    }
+  };
+
+  const handleRemoveQueueTrack = async (uri: string) => {
+    if (!uri) return;
+    try {
+      setQueue((prev) => prev.filter((t) => t.uri !== uri));
+      await invoke("spotify_queue_action", { action: "remove", uri });
+    } catch (err) {
+      console.error("Failed to remove queue track:", err);
+    }
+  };
+
+  const handleClearQueue = async () => {
+    try {
+      setQueue([]);
+      await invoke("spotify_queue_action", { action: "clear", uri: null });
+    } catch (err) {
+      console.error("Failed to clear queue:", err);
+    }
+  };
+
   const targetBorderRadius = isCompact
     ? "0px 0px 11px 11px"
     : `0px 0px ${settings.borderRadius}px ${settings.borderRadius}px`;
@@ -1084,11 +1094,7 @@ export default function App() {
   return (
     <div
       className="w-full h-full flex flex-col items-center justify-start select-none overflow-hidden"
-      onMouseMove={(e) => {
-        if (expandedRef.current && !isInsideNotch(e.clientX, e.clientY)) {
-          scheduleCollapse(200);
-        }
-      }}
+      onMouseMove={handleMouseMove}
     >
       <motion.div
         ref={notchRef}
@@ -1147,14 +1153,6 @@ export default function App() {
         }}
         onClick={() => {
           if (!expanded) handleMouseEnter();
-        }}
-        onDoubleClick={(e) => {
-          e.stopPropagation();
-          const nextCompact = !settings.compactMode;
-          const updated = { ...settings, compactMode: nextCompact };
-          setSettings(updated);
-          saveSettings(updated);
-          emit("notch-settings-update", updated).catch(() => {});
         }}
         className={`group relative ${
           expanded
@@ -1702,6 +1700,23 @@ export default function App() {
                     </button>
                   )}
 
+                  {/* Pin / Keep Open Toggle Button */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsPinned((prev) => !prev);
+                    }}
+                    title={isPinned ? "Notch terkunci terbuka (Klik untuk lepas pin)" : "Pin Notch agar tetap terbuka"}
+                    className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                      isPinned
+                        ? "bg-white/20 text-white shadow-sm"
+                        : "text-neutral-400 hover:text-white hover:bg-white/10"
+                    }`}
+                    style={isPinned ? { color: settings.accentColor } : undefined}
+                  >
+                    <Pin className={`w-3.5 h-3.5 transition-transform ${isPinned ? "rotate-45" : ""}`} />
+                  </button>
+
                   {/* Settings Button */}
                   <button
                     onClick={handleOpenSettings}
@@ -1732,9 +1747,9 @@ export default function App() {
                     switchModule(undefined, "prev");
                   }}
                   title="Previous Module"
-                  className="absolute left-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-neutral-900/85 hover:bg-white/20 text-neutral-300 hover:text-white border border-white/10 transition-all shadow-xl z-30 active:scale-90"
+                  className="absolute left-1.5 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center rounded-full bg-neutral-900/90 hover:bg-white/20 text-neutral-400 hover:text-white border border-white/10 transition-all shadow-lg z-30 active:scale-90 cursor-pointer"
                 >
-                  <ChevronLeft className="w-4 h-4" />
+                  <ChevronLeft className="w-3.5 h-3.5" />
                 </button>
               )}
 
@@ -1746,9 +1761,9 @@ export default function App() {
                     switchModule(undefined, "next");
                   }}
                   title="Next Module"
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-full bg-neutral-900/85 hover:bg-white/20 text-neutral-300 hover:text-white border border-white/10 transition-all shadow-xl z-30 active:scale-90"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 w-7 h-7 flex items-center justify-center rounded-full bg-neutral-900/90 hover:bg-white/20 text-neutral-400 hover:text-white border border-white/10 transition-all shadow-lg z-30 active:scale-90 cursor-pointer"
                 >
-                  <ChevronRight className="w-4 h-4" />
+                  <ChevronRight className="w-3.5 h-3.5" />
                 </button>
               )}
 
@@ -1762,7 +1777,7 @@ export default function App() {
                       animate={{ opacity: 1, x: 0 }}
                       exit={{ opacity: 0, x: -24 }}
                       transition={{ duration: 0.18 }}
-                      className="h-full flex flex-col justify-between pr-5 pl-1"
+                      className="h-full flex flex-col justify-between pl-3 pr-10"
                     >
                       {/* Middle Section: Player OR Lyrics OR Queue */}
               {expandedView === "player" ? (
@@ -1853,7 +1868,7 @@ export default function App() {
                   ) : lyrics.length > 0 ? (
                     <div
                       ref={lyricsContainerRef}
-                      className="overflow-y-auto max-h-[140px] pr-1 scroll-smooth flex flex-col gap-2.5 no-scrollbar py-2"
+                      className="lyrics-scroll overflow-y-auto max-h-[140px] pr-1 scroll-smooth flex flex-col gap-2.5 no-scrollbar py-2"
                       style={{ scrollbarWidth: "none" }}
                     >
                       {lyrics.map((line, idx) => {
@@ -1886,7 +1901,7 @@ export default function App() {
                     </div>
                   ) : plainLyrics ? (
                     <div
-                      className="overflow-y-auto max-h-[140px] pr-1 whitespace-pre-line text-xs text-neutral-300 text-center"
+                      className="lyrics-scroll overflow-y-auto max-h-[140px] pr-1 whitespace-pre-line text-xs text-neutral-300 text-center"
                       style={{ scrollbarWidth: "none" }}
                     >
                       {plainLyrics}
@@ -1901,22 +1916,41 @@ export default function App() {
                 /* Queue / Upcoming Tracks */
                 <div className="my-1 flex-1 min-h-[140px] max-h-[150px] overflow-hidden flex flex-col">
                   <div className="flex items-center justify-between text-[10px] text-neutral-400 font-mono px-1 pb-1 border-b border-white/5">
-                    <span>UPCOMING PLAYLIST</span>
-                    <span>{queue.length > 0 ? `${queue.length} lagu` : "Menunggu Spotify..."}</span>
+                    <div className="flex items-center gap-2">
+                      <span>UPCOMING PLAYLIST</span>
+                      <span className="text-neutral-500 font-normal">
+                        {queue.length > 0 ? `${queue.length} lagu` : "Menunggu Spotify..."}
+                      </span>
+                    </div>
+                    {queue.length > 0 && (
+                      <button
+                        onClick={handleClearQueue}
+                        title="Kosongkan antrean di Spotify"
+                        className="flex items-center gap-1 text-[9px] text-neutral-500 hover:text-red-400 transition-colors p-0.5 rounded cursor-pointer"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>Hapus Antrean</span>
+                      </button>
+                    )}
                   </div>
                   <div
-                    className="flex-1 overflow-y-auto space-y-1 py-1.5 pr-0.5"
+                    className="queue-scroll flex-1 overflow-y-auto space-y-1 py-1.5 pr-0.5"
                     style={{ scrollbarWidth: "none" }}
                   >
                     {queue.length > 0 ? (
                       queue.map((track, idx) => (
                         <div
                           key={track.uri || idx}
-                          className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-white/[0.03] hover:bg-white/[0.08] transition-colors group"
+                          onClick={() => handlePlayQueueTrack(track.uri)}
+                          title={`Putar "${track.title}" sekarang`}
+                          className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-white/[0.03] hover:bg-white/[0.08] transition-colors group cursor-pointer"
                         >
-                          <span className="text-[10px] font-mono text-neutral-500 w-3.5 text-center shrink-0">
-                            {idx + 1}
-                          </span>
+                          <div className="w-4 h-4 flex items-center justify-center shrink-0">
+                            <span className="text-[10px] font-mono text-neutral-500 group-hover:hidden">
+                              {idx + 1}
+                            </span>
+                            <Play className="w-3.5 h-3.5 fill-emerald-400 text-emerald-400 hidden group-hover:block shrink-0" />
+                          </div>
                           {track.image_url ? (
                             <img
                               src={track.image_url}
@@ -1940,10 +1974,20 @@ export default function App() {
                             </span>
                           </div>
                           {track.duration_ms > 0 && (
-                            <span className="text-[10px] font-mono text-neutral-500 shrink-0">
+                            <span className="text-[10px] font-mono text-neutral-500 shrink-0 group-hover:hidden">
                               {formatMs(track.duration_ms)}
                             </span>
                           )}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRemoveQueueTrack(track.uri);
+                            }}
+                            title="Hapus dari antrean Spotify"
+                            className="hidden group-hover:flex items-center justify-center w-5 h-5 rounded hover:bg-red-500/20 text-neutral-400 hover:text-red-400 transition-colors cursor-pointer shrink-0"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       ))
                     ) : (
@@ -1994,7 +2038,7 @@ export default function App() {
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: 24 }}
               transition={{ duration: 0.18 }}
-              className="h-full pt-1 pl-5 pr-2"
+              className="h-full pt-1 px-10"
             >
               <TodoList
                 todos={todos}
@@ -2014,7 +2058,7 @@ export default function App() {
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: 24 }}
               transition={{ duration: 0.18 }}
-              className="h-full pt-1 pl-5 pr-2"
+              className="h-full pt-1 px-10"
             >
               <Shelf
                 accentColor={settings.accentColor}
@@ -2029,7 +2073,7 @@ export default function App() {
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: 24 }}
               transition={{ duration: 0.18 }}
-              className="h-full pt-1 pl-5 pr-3 pb-3.5"
+              className="h-full pt-1 px-10 pb-3.5"
             >
               <PerformanceHUD
                 isActive={expanded && activeModule === "perf"}

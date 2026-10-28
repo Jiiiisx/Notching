@@ -12,6 +12,7 @@ import {
   Gamepad2,
   Minimize2,
   AppWindow,
+  Power,
 } from "lucide-react";
 import { emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -58,10 +59,36 @@ const FONT_WEIGHTS: Array<{ label: string; value: NotchSettings["fontWeight"] }>
 ];
 
 export default function SettingsApp() {
-  const [activeTab, setActiveTab] = useState<"appearance" | "typography" | "display" | "motion" | "integrations">("display");
+  const [activeTab, setActiveTab] = useState<
+    "appearance" | "typography" | "display" | "motion" | "integrations" | "system"
+  >("display");
   const [settings, setSettings] = useState<NotchSettings>(loadSettings);
   const [monitors, setMonitors] = useState<MonitorOption[]>([]);
   const [isRefreshingMonitors, setIsRefreshingMonitors] = useState(false);
+  const [autostartEnabled, setAutostartEnabled] = useState(false);
+  const [isLoadingAutostart, setIsLoadingAutostart] = useState(false);
+
+  const fetchAutostart = async () => {
+    try {
+      const enabled = await invoke<boolean>("get_autostart_status");
+      setAutostartEnabled(enabled);
+    } catch (e) {
+      console.error("Failed to fetch autostart status:", e);
+    }
+  };
+
+  const toggleAutostart = async () => {
+    setIsLoadingAutostart(true);
+    try {
+      const nextState = !autostartEnabled;
+      await invoke("set_autostart_status", { enable: nextState });
+      setAutostartEnabled(nextState);
+    } catch (e) {
+      console.error("Failed to toggle autostart:", e);
+    } finally {
+      setIsLoadingAutostart(false);
+    }
+  };
 
   const fetchMonitors = async () => {
     setIsRefreshingMonitors(true);
@@ -101,6 +128,7 @@ export default function SettingsApp() {
 
   useEffect(() => {
     fetchMonitors();
+    fetchAutostart();
     emit("notch-settings-update", settings).catch(() => {});
   }, []);
 
@@ -212,6 +240,18 @@ export default function SettingsApp() {
           >
             <Volume2 className="w-4 h-4" style={{ color: settings.accentColor }} />
             Integrasi
+          </button>
+
+          <button
+            onClick={() => setActiveTab("system")}
+            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+              activeTab === "system"
+                ? "bg-white/10 text-white border border-white/15"
+                : "text-neutral-400 hover:text-white hover:bg-white/5"
+            }`}
+          >
+            <Power className="w-4 h-4" style={{ color: settings.accentColor }} />
+            Sistem & Startup
           </button>
         </div>
 
@@ -647,16 +687,18 @@ export default function SettingsApp() {
               <div className="bg-neutral-900/50 border border-white/5 rounded-xl p-4 space-y-3">
                 <div className="flex items-center justify-between">
                   <div>
-                    <div className="text-xs font-medium text-white">Lead Time Sinkronisasi Lirik</div>
-                    <div className="text-[11px] text-neutral-400">Kompensasi vokal mendahului timeline audio</div>
+                    <div className="text-xs font-medium text-white">Sinkronisasi Waktu Lirik (Offset)</div>
+                    <div className="text-[11px] text-neutral-400">Atur perpindahan baris lirik (minus: menunda, plus: mempercepat)</div>
                   </div>
-                  <span className="text-xs font-mono text-emerald-400">+{settings.leadTime.toFixed(1)}s</span>
+                  <span className="text-xs font-mono text-emerald-400">
+                    {settings.leadTime > 0 ? `+${settings.leadTime.toFixed(2)}s` : `${settings.leadTime.toFixed(2)}s`}
+                  </span>
                 </div>
                 <input
                   type="range"
-                  min="0.0"
-                  max="1.0"
-                  step="0.1"
+                  min="-1.5"
+                  max="1.5"
+                  step="0.05"
                   value={settings.leadTime}
                   onChange={(e) => update({ leadTime: Number(e.target.value) })}
                   className="w-full accent-emerald-500"
@@ -712,6 +754,58 @@ export default function SettingsApp() {
                   <CheckCircle2 className="w-3.5 h-3.5" />
                   Active
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 5: SYSTEM & STARTUP */}
+          {activeTab === "system" && (
+            <div className="space-y-4 max-w-lg">
+              <div>
+                <div className="text-xs font-medium text-white">Sistem & Startup</div>
+                <div className="text-[11px] text-neutral-400 mt-0.5">
+                  Kelola peluncuran otomatis Notch saat komputer dinyalakan
+                </div>
+              </div>
+
+              {/* Startup App Toggle Card */}
+              <div className="bg-neutral-900/50 border border-white/5 rounded-xl p-4 flex items-center justify-between">
+                <div className="flex items-start gap-3">
+                  <div
+                    className="p-2 rounded-lg mt-0.5"
+                    style={{ backgroundColor: `${settings.accentColor}20`, color: settings.accentColor }}
+                  >
+                    <Power className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="text-xs font-medium text-white">Jalankan saat Windows Menyala</div>
+                    <div className="text-[11px] text-neutral-400 mt-0.5 leading-relaxed">
+                      Otomatis membuka Notch saat booting sistem (terdaftar di Task Manager Startup Apps)
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={isLoadingAutostart}
+                  onClick={toggleAutostart}
+                  className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors cursor-pointer shrink-0 disabled:opacity-50 ${
+                    autostartEnabled ? "bg-emerald-500" : "bg-neutral-800"
+                  }`}
+                >
+                  <div
+                    className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
+                      autostartEnabled ? "translate-x-5" : "translate-x-0"
+                    }`}
+                  />
+                </button>
+              </div>
+
+              <div className="bg-neutral-900/30 border border-white/5 rounded-xl p-4 space-y-2 text-[11px] text-neutral-400">
+                <div className="font-semibold text-neutral-300">Catatan Registry Windows:</div>
+                <p>
+                  Pengaturan ini mendaftarkan Notch ke registry pengguna (<code className="text-neutral-200">HKCU\Software\Microsoft\Windows\CurrentVersion\Run</code>) tanpa memerlukan hak Administrator atau UAC prompt.
+                </p>
               </div>
             </div>
           )}

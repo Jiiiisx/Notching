@@ -1,6 +1,23 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::Mutex;
 use tauri::{AppHandle, Emitter};
+
+static PENDING_COMMANDS: Mutex<Vec<serde_json::Value>> = Mutex::new(Vec::new());
+
+pub fn enqueue_command(cmd: serde_json::Value) {
+    if let Ok(mut lock) = PENDING_COMMANDS.lock() {
+        lock.push(cmd);
+    }
+}
+
+pub fn pop_all_commands() -> Vec<serde_json::Value> {
+    if let Ok(mut lock) = PENDING_COMMANDS.lock() {
+        std::mem::take(&mut *lock)
+    } else {
+        Vec::new()
+    }
+}
 
 pub fn start_queue_server(app_handle: AppHandle) {
     std::thread::spawn(move || {
@@ -61,10 +78,32 @@ fn handle_client(stream: &mut TcpStream, app: AppHandle) {
     if request_str.starts_with("OPTIONS") {
         let response = "HTTP/1.1 200 OK\r\n\
                         Access-Control-Allow-Origin: *\r\n\
-                        Access-Control-Allow-Methods: POST, OPTIONS\r\n\
+                        Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
                         Access-Control-Allow-Headers: Content-Type\r\n\
                         Access-Control-Allow-Private-Network: true\r\n\
                         Content-Length: 0\r\n\r\n";
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+        return;
+    }
+
+    // Handle GET /commands
+    if request_str.starts_with("GET /commands") {
+        let commands = pop_all_commands();
+        let body = serde_json::json!({
+            "status": "ok",
+            "commands": commands
+        }).to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\n\
+             Access-Control-Allow-Origin: *\r\n\
+             Access-Control-Allow-Private-Network: true\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {}\r\n\r\n\
+             {}",
+            body.len(),
+            body
+        );
         let _ = stream.write_all(response.as_bytes());
         let _ = stream.flush();
         return;
@@ -99,12 +138,21 @@ fn handle_client(stream: &mut TcpStream, app: AppHandle) {
             }
         }
 
-        let response = "HTTP/1.1 200 OK\r\n\
-                        Access-Control-Allow-Origin: *\r\n\
-                        Access-Control-Allow-Private-Network: true\r\n\
-                        Content-Type: application/json\r\n\
-                        Content-Length: 15\r\n\r\n\
-                        {\"status\":\"ok\"}";
+        let commands = pop_all_commands();
+        let body_resp = serde_json::json!({
+            "status": "ok",
+            "commands": commands
+        }).to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\n\
+             Access-Control-Allow-Origin: *\r\n\
+             Access-Control-Allow-Private-Network: true\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {}\r\n\r\n\
+             {}",
+            body_resp.len(),
+            body_resp
+        );
         let _ = stream.write_all(response.as_bytes());
         let _ = stream.flush();
     }

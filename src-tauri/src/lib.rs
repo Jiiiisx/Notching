@@ -2,6 +2,7 @@ mod audio_manager;
 mod game_detector;
 mod hit_test;
 mod media;
+mod memory_manager;
 mod queue_server;
 mod system_monitor;
 mod window_helper;
@@ -252,6 +253,67 @@ fn get_system_stats(
     state.get_stats()
 }
 
+#[tauri::command]
+fn trim_memory() {
+    memory_manager::trim_memory();
+}
+
+#[tauri::command]
+fn spotify_queue_action(action: String, uri: Option<String>) -> Result<(), String> {
+    queue_server::enqueue_command(serde_json::json!({
+        "action": action,
+        "uri": uri
+    }));
+    Ok(())
+}
+
+#[tauri::command]
+fn get_autostart_status() -> Result<bool, String> {
+    let output = std::process::Command::new("reg")
+        .args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", "Notch"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| e.to_string())?;
+    Ok(output.status.success())
+}
+
+#[tauri::command]
+fn set_autostart_status(enable: bool) -> Result<bool, String> {
+    if enable {
+        let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+        let exe_str = exe_path.to_string_lossy().to_string();
+        let val = format!("\"{}\"", exe_str);
+        let status = std::process::Command::new("reg")
+            .args([
+                "add",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                "/v",
+                "Notch",
+                "/t",
+                "REG_SZ",
+                "/d",
+                &val,
+                "/f",
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .map_err(|e| e.to_string())?;
+        Ok(status.success())
+    } else {
+        let _ = std::process::Command::new("reg")
+            .args([
+                "delete",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+                "/v",
+                "Notch",
+                "/f",
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+        Ok(false)
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -301,6 +363,21 @@ pub fn run() {
                 }
             }
             if window.label() == "main" {
+                if let WindowEvent::Moved(pos) = event {
+                    if let Ok(Some(mon)) = window.current_monitor() {
+                        let mon_top = mon.position().y;
+                        if pos.y != mon_top {
+                            if let Some(main_win) = window.app_handle().get_webview_window("main") {
+                                window_helper::reposition_notch(
+                                    &main_win,
+                                    window_helper::NOTCH_CANVAS_WIDTH,
+                                    window_helper::NOTCH_CANVAS_HEIGHT,
+                                    None,
+                                );
+                            }
+                        }
+                    }
+                }
                 if let WindowEvent::ScaleFactorChanged { .. } = event {
                     let app_handle = window.app_handle().clone();
                     std::thread::spawn(move || {
@@ -364,6 +441,9 @@ pub fn run() {
             let sys_monitor = system_monitor::SystemMonitor::new();
             app.manage(sys_monitor);
 
+            // Start memory trimmer to actively reduce unused WebView2 RAM
+            memory_manager::start_memory_trimmer();
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -385,7 +465,11 @@ pub fn run() {
             set_master_volume,
             set_master_mute,
             set_default_audio_device,
-            get_system_stats
+            get_system_stats,
+            get_autostart_status,
+            set_autostart_status,
+            trim_memory,
+            spotify_queue_action
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tauri-app",
+  "productName": "Notch",
   "version": "0.1.0",
-  "identifier": "com.hype-amd.tauri-app",
+  "identifier": "com.notch.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -21,7 +21,7 @@
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "shadow": false,
-        "resizable": true
+        "resizable": false
       },
       {
         "label": "settings",

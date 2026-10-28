@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{LogicalPosition, LogicalSize, WebviewWindow};
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowLongPtrW, GetWindowRect, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HWND_TOPMOST,
-    SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    GetWindowLongPtrW, GetWindowRect, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE,
+    HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOSENDCHANGING, SWP_NOZORDER, WS_CAPTION, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_POPUP, WS_THICKFRAME,
 };
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
@@ -148,8 +149,12 @@ pub fn setup_notch_window(window: &WebviewWindow) {
         unsafe {
             let hwnd_val = HWND(hwnd.0 as _);
             let ex_style = GetWindowLongPtrW(hwnd_val, GWL_EXSTYLE);
-            let new_style = ex_style | (WS_EX_NOACTIVATE.0 as isize) | (WS_EX_TOOLWINDOW.0 as isize);
-            SetWindowLongPtrW(hwnd_val, GWL_EXSTYLE, new_style);
+            let new_ex_style = ex_style | (WS_EX_NOACTIVATE.0 as isize) | (WS_EX_TOOLWINDOW.0 as isize);
+            SetWindowLongPtrW(hwnd_val, GWL_EXSTYLE, new_ex_style);
+
+            let style = GetWindowLongPtrW(hwnd_val, GWL_STYLE);
+            let new_style = (style & !(WS_THICKFRAME.0 as isize) & !(WS_CAPTION.0 as isize)) | (WS_POPUP.0 as isize);
+            SetWindowLongPtrW(hwnd_val, GWL_STYLE, new_style);
         }
     }
     reposition_notch(window, NOTCH_CANVAS_WIDTH, NOTCH_CANVAS_HEIGHT, None);
