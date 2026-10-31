@@ -98,11 +98,14 @@ unsafe extern "system" fn wheel_hook_proc(
                     // element di bawah kursor sendiri.
                     let tid = WHEEL_PUMP_TID.load(Ordering::Acquire);
                     if tid != 0 {
+                        // x/y bisa negatif (monitor kiri/atas primary): kemas
+                        // sebagai dua i32 utuh di LPARAM 64-bit, bukan 16-bit.
+                        let packed = ((pt.0 as u32 as u64) | ((pt.1 as u32 as u64) << 32)) as isize;
                         let _ = PostThreadMessageW(
                             tid,
                             WM_APP_WHEEL,
                             WPARAM(m.mouseData as usize),
-                            LPARAM(((pt.1 as isize) << 16) | (pt.0 as isize & 0xFFFF)),
+                            LPARAM(packed),
                         );
                         return LRESULT(1);
                     }
@@ -145,9 +148,9 @@ pub fn start_wheel_redirect(app: AppHandle, state: Arc<HitTestState>) {
                 }
                 if msg.message == WM_APP_WHEEL {
                     let mouse_data = msg.wParam.0 as u32;
-                    let packed = msg.lParam.0;
-                    let sx = (packed as u16) as i32;
-                    let sy = ((packed >> 16) & 0xFFFF) as u16 as i32;
+                    let packed = msg.lParam.0 as u64;
+                    let sx = packed as u32 as i32;
+                    let sy = (packed >> 32) as u32 as i32;
                     let raw_delta = ((mouse_data >> 16) & 0xFFFF) as i16 as i32;
                     let hwnd_v = NOTCH_HWND.load(Ordering::Relaxed);
                     if hwnd_v != 0 {

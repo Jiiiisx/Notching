@@ -531,9 +531,19 @@ export default function App() {
 
     // When expanded:
     const target = e.target as HTMLElement;
-    const isScrollable = target.closest(
-      ".queue-scroll, .lyrics-scroll, .todo-list-scroll, .shelf-scroll, .notif-scroll, [data-scrollable='true']"
-    ) as HTMLElement | null;
+    // Generik: list scrollable apa pun (dropdown, device list, chat agent) —
+    // modul baru tidak perlu didaftarkan manual ke selector.
+    let scrollAncestor: HTMLElement | null = target;
+    while (scrollAncestor && scrollAncestor !== e.currentTarget) {
+      const ov = getComputedStyle(scrollAncestor).overflowY;
+      if ((ov === "auto" || ov === "scroll") && scrollAncestor.scrollHeight > scrollAncestor.clientHeight) break;
+      scrollAncestor = scrollAncestor.parentElement;
+    }
+    const isScrollable =
+      (scrollAncestor !== e.currentTarget ? scrollAncestor : null) ??
+      (target.closest(
+        ".queue-scroll, .lyrics-scroll, .todo-list-scroll, .shelf-scroll, .notif-scroll, [data-scrollable='true']"
+      ) as HTMLElement | null);
 
     // 1. If mouse is over any scrollable list (Queue, Lyrics, Todo list, Shelf):
     // Vertical scrolling is 100% reserved for smooth native scrolling; never switch module!
@@ -772,14 +782,22 @@ export default function App() {
   useEffect(() => {
     const p = listen<{ x: number; y: number; dy: number }>("notch-wheel", (event) => {
       const { x, y, dy } = event.payload;
-      let target: HTMLElement | null = document.elementFromPoint(x, y) as HTMLElement | null;
+      const hit = document.elementFromPoint(x, y) as HTMLElement | null;
+      // Konvensi DOM: deltaY > 0 = scroll ke bawah. WM_MOUSEWHEEL delta > 0 =
+      // roda ke atas, jadi dibalik di sini (dy dari Rust = delta mentah/120*48).
+      const deltaY = -dy;
+      // Event sintetis supaya handler onWheel React (ganti modul dll) tetap jalan.
+      hit?.dispatchEvent(
+        new WheelEvent("wheel", { deltaY, deltaMode: 0, clientX: x, clientY: y, bubbles: true, cancelable: true })
+      );
+      let target: HTMLElement | null = hit;
       while (target && target !== document.body) {
         const ov = getComputedStyle(target).overflowY;
         if ((ov === "auto" || ov === "scroll") && target.scrollHeight > target.clientHeight) break;
         target = target.parentElement;
       }
       if (target && target !== document.body) {
-        target.scrollTop += dy;
+        target.scrollTop += deltaY;
       }
     });
     return () => {
@@ -2587,6 +2605,7 @@ export default function App() {
                         <div
                           role="menu"
                           onClick={(e) => e.stopPropagation()}
+                          onWheel={(e) => e.stopPropagation()}
                           className="absolute right-0 top-full mt-1.5 z-50 w-52 max-h-[220px] overflow-y-auto rounded-xl border border-white/15 bg-[#18191e]/98 p-1 shadow-2xl backdrop-blur-xl"
                         >
                           {/* Modules that don't fit the header icon strip (max 5 pinned) */}
