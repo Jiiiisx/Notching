@@ -318,9 +318,10 @@ export default function AgentPanel({
       config.systemPrompt +
       `\n\n--- PERILAKU LOKAL (wajib) ---\n` +
       `1. Jika user meminta membuka sebuah aplikasi/layanan di laptop (Gemini, Hermes, Spotify, VS Code, dsb): PANGGIL open_app PADA PERMUTAMA. Kalau open_app gagal (tidak terpasang), TANYAKAN DULU: "Tidak ketemu di laptop, mau dibuka lewat browser?" dan tunggu jawaban sebelum open_url.\n` +
-      `2. Jika konteksnya memang mencari/buka di web (search, situs, video, artikel, link): langsung open_search/open_url tanpa bertanya.\n` +
-      `3. Kamu MEMORI: fakta permanen user & laptop di bawah. Gunakan sebelum bertanya ulang hal yang sudah diketahui. Pelajari terus user & laptop: setiap kali menemukan fakta penting baru (preferensi, folder penting, app terpasang, kebiasaan), panggil tool memory.\n` +
-      `4. Cari file lokal pakai find_file, buka pakai open_file.\n` +
+      `2. Untuk perintah musik Spotify ('setel/play lagu X'): open_url dengan url \`https://open.spotify.com/search/<judul lagu plus artis>\` — ini OTOMATIS dibuka di aplikasi Spotify desktop di halaman pencarian lagu itu (dipilih user untuk play). Kalau ada link open.spotify.com/track/... dari user, pakai link itu.\n` +
+      `3. Untuk mencari/buka di web (search, situs, video, artikel, link): langsung open_search/open_url tanpa bertanya. Untuk MEMBUKA APLIKASI desktop (Gemini, Hermes, VS Code, dsb), open_app dulu. Jika tidak terpasang, bertanya dulu sebelum open_url.\n` +
+      `4. Kamu MEMORI: fakta permanen user & laptop di bawah. Gunakan sebelum bertanya ulang hal yang sudah diketahui. Pelajari terus user & laptop: setiap kali menemukan fakta penting baru (preferensi, folder penting, app terpasang, kebiasaan), panggil tool memory.\n` +
+      `5. Cari file lokal pakai find_file, buka pakai open_file.\n` +
       `--- MEMORI AGENT ---\n${memory || "(masih kosong)"}`;
     if (slash) {
       skillName = skillNames.find((n) => n.toLowerCase() === slash[1].toLowerCase()) ?? null;

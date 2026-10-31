@@ -327,6 +327,13 @@ fn agent_run_tool(
             } else {
                 format!("https://{}", url)
             };
+            // spotify: URI langsung dari model: lewatkan tanpa diubah.
+            if url.starts_with("spotify:") {
+                app.opener()
+                    .open_url(&url, None::<&str>)
+                    .map_err(|e| e.to_string())?;
+                return Ok(format!("Dibuka lewat aplikasi Spotify: {url}"));
+            }
             // Spotify deep link: buka lewat aplikasi Spotify desktop, bukan
             // browser. open.spotify.com/<type>/<id> -> spotify:<type>:<id>.
             // ponytail: cek apakah protokol spotify: terpasang lewat try-open;
@@ -338,14 +345,22 @@ fn agent_run_tool(
                     .filter(|s| !s.is_empty())
                     .collect();
                 let segs = if segs.first() == Some(&"intl") { segs[1..].to_vec() } else { segs };
-                if segs.len() >= 2
+                // /search/<judul...> -> spotify:search:<judul> di app desktop.
+                let uri = if segs.first() == Some(&"search") {
+                    let q = url
+                        .trim_start_matches("https://open.spotify.com/search/")
+                        .split(['/', '?', '#']).next().unwrap_or("");
+                    Some(format!("spotify:search:{}", q.replace("%20", " ").replace('+', " ")))
+                } else if segs.len() >= 2
                     && matches!(
                         segs[0],
                         "track" | "album" | "playlist" | "artist" | "episode" | "show"
-                    )
-                    && segs[0] != "intl"
-                {
-                    let uri = format!("spotify:{}:{}", segs[0], segs[1]);
+                    ) {
+                    Some(format!("spotify:{}:{}", segs[0], segs[1]))
+                } else {
+                    None
+                };
+                if let Some(uri) = uri {
                     if app.opener().open_url(&uri, None::<&str>).is_ok() {
                         return Ok(format!("Dibuka lewat aplikasi Spotify: {uri}"));
                     }
