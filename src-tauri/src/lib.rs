@@ -172,6 +172,28 @@ fn agent_memory_append(line: String) -> Result<String, String> {
     Ok(format!("Tersimpan: {line}"))
 }
 
+/// Buka .lnk/app via `cmd /c start` (stdlib). tauri_plugin_opener(\Verb open_path)
+/// ternyata gagal diam-diam untuk sebagian .lnk Start Menu (contoh nyata:
+/// Spotify.lnk); `start` utilisasi ShellExecute sama seperti Explorer.
+/// CREATE_NO_WINDOW supaya tidak ada kilatan jendela cmd.
+fn open_shortcut(path: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("cmd")
+            .args(["/c", "start", "", path])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .spawn()
+            .map_err(|e| format!("Gagal launcher \"{path}\": {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Err("open_app hanya untuk Windows".into())
+    }
+}
+
 /// Cari app terpasang berdasarkan nama lewat shortcut Start Menu & Desktop
 /// (.lnk). Return daftar .lnk; kosong dianggap tidak ketemu.
 fn find_app(name: &str) -> Result<Vec<String>, String> {
@@ -406,9 +428,7 @@ fn agent_run_tool(
                     hits.len(), name, hits.join("\n")
                 ));
             }
-            app.opener()
-                .open_path(&hits[0], None::<&str>)
-                .map_err(|e| e.to_string())?;
+            open_shortcut(&hits[0])?;
             Ok(format!("Dibuka app: {}", hits[0]))
         }
         "memory" => agent_memory_append(
