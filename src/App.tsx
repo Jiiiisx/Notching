@@ -767,6 +767,26 @@ export default function App() {
     };
   }, []);
 
+  // Wheel redirect dari hook Rust: scroll element di bawah kursor manual
+  // (hook menelan wheel OS agar window di belakang notch tidak ikut scroll)
+  useEffect(() => {
+    const p = listen<{ x: number; y: number; dy: number }>("notch-wheel", (event) => {
+      const { x, y, dy } = event.payload;
+      let target: HTMLElement | null = document.elementFromPoint(x, y) as HTMLElement | null;
+      while (target && target !== document.body) {
+        const ov = getComputedStyle(target).overflowY;
+        if ((ov === "auto" || ov === "scroll") && target.scrollHeight > target.clientHeight) break;
+        target = target.parentElement;
+      }
+      if (target && target !== document.body) {
+        target.scrollTop += dy;
+      }
+    });
+    return () => {
+      p.then((fn) => fn());
+    };
+  }, []);
+
   // Global shortcut (Ctrl+Alt+N) registered in Rust
   useEffect(() => {
     const p = listen("toggle-notch-shortcut", () => {

@@ -1,15 +1,15 @@
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, WebviewWindow};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, FindWindowExW, GetMessageW, GetCursorPos, GetWindowRect, MSG,
-    MSLLHOOKSTRUCT, PostMessageW, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
-    WH_MOUSE_LL, WM_MOUSEHWHEEL, WM_MOUSEWHEEL,
+    CallNextHookEx, DispatchMessageW, GetMessageW, GetCursorPos, GetWindowRect, MSG,
+    MSLLHOOKSTRUCT, PostThreadMessageW, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
+    WH_MOUSE_LL, WM_MOUSEWHEEL,
 };
-use windows::core::{w, PCWSTR};
 
 #[derive(Debug, Clone)]
 pub struct PillGeometry {
@@ -87,41 +87,24 @@ unsafe extern "system" fn wheel_hook_proc(
 ) -> LRESULT {
     unsafe {
         // NOTE: callback-statics only; never call Tauri APIs from LL hooks.
-        if code >= 0 {
-            let msg = wparam.0 as u32;
-            if msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL {
-                let m = *(lparam.0 as *const MSLLHOOKSTRUCT);
-                // Geometry state is created in setup() before the hook starts.
-                if let Some(state) = WHEEL_STATE.get() {
-                    let pt = (m.pt.x, m.pt.y);
-                    if wheel_point_inside_notch(pt, state) {
-                        let hwnd_v = NOTCH_HWND.load(Ordering::Relaxed);
-                        if hwnd_v != 0 {
-                            let hwnd = HWND(hwnd_v as isize as *mut _);
-                            // Re-post the wheel into the notch webview:
-                            // wparam = MAKEWPARAM(flags=0, delta), lparam = MAKELPARAM(x, y).
-                            let delta = ((m.mouseData >> 16) & 0xFFFF) as isize;
-                            let wp = WPARAM((delta << 16) as usize);
-                            let lp = LPARAM(((pt.1 as isize) << 16) | (pt.0 as isize & 0xFFFF));
-                            // Target: host WebView2 child (Chrome_WidgetWin_1).
-                            // The top-level notch window menforward wheel tidak
-                            // reliable — WebView2 memproses WM_MOUSEWHEEL di
-                            // child-nya sendiri. Koordinat tetap screen coords.
-                            let target = FindWindowExW(
-                                Some(hwnd),
-                                None,
-                                PCWSTR(w!("Chrome_WidgetWin_1").as_ptr()),
-                                None,
-                            )
-                            .unwrap_or(hwnd);
-                            let _ = PostMessageW(
-                                Some(target),
-                                msg,
-                                wp,
-                                lp,
-                            );
-                            return LRESULT(1);
-                        }
+        if code >= 0 && wparam.0 as u32 == WM_MOUSEWHEEL {
+            let m = *(lparam.0 as *const MSLLHOOKSTRUCT);
+            if let Some(state) = WHEEL_STATE.get() {
+                let pt = (m.pt.x, m.pt.y);
+                if wheel_point_inside_notch(pt, state) {
+                    // Tarik event ke arah pump tau kita (bukan ke webview —
+                    // WebView2 mengabaikan posted WM_MOUSEWHEEL). Pump thread
+                    // emit Tauri event `notch-wheel` dan frontend scroll
+                    // element di bawah kursor sendiri.
+                    let tid = WHEEL_PUMP_TID.load(Ordering::Acquire);
+                    if tid != 0 {
+                        let _ = PostThreadMessageW(
+                            tid,
+                            WM_APP_WHEEL,
+                            WPARAM(m.mouseData as usize),
+                            LPARAM(((pt.1 as isize) << 16) | (pt.0 as isize & 0xFFFF)),
+                        );
+                        return LRESULT(1);
                     }
                 }
             }
@@ -132,12 +115,15 @@ unsafe extern "system" fn wheel_hook_proc(
 
 // Stored once at hook startup; OnceLock keeps the callback signature simple.
 static WHEEL_STATE: std::sync::OnceLock<Arc<HitTestState>> = std::sync::OnceLock::new();
+static WHEEL_PUMP_TID: AtomicU32 = AtomicU32::new(0);
+const WM_APP_WHEEL: u32 = 0xB501;
 
 /// WH_MOUSE_LL hook: wheel events with the cursor inside the notch region are
-/// redirected into the notch webview and swallowed. This is the OS-level
-/// guarantee behind "scroll di notch tidak menggeser app di belakangnya".
-pub fn start_wheel_redirect(_app: AppHandle, state: Arc<HitTestState>) {
-    let _ = WHEEL_STATE.set(state);
+/// swallowed and forwarded to the frontend as a Tauri event, which scrolls the
+/// element under the cursor itself. OS-level guarantee behind "scroll di notch
+/// tidak menggeser app di belakangnya".
+pub fn start_wheel_redirect(app: AppHandle, state: Arc<HitTestState>) {
+    let _ = WHEEL_STATE.set(state.clone());
     let _ = std::thread::Builder::new()
         .name("wheel-redirect-hook".into())
         .spawn(move || unsafe {
@@ -150,11 +136,38 @@ pub fn start_wheel_redirect(_app: AppHandle, state: Arc<HitTestState>) {
                 Ok(h) => h,
                 Err(_) => return,
             };
+            WHEEL_PUMP_TID.store(GetCurrentThreadId(), Ordering::Release);
             let mut msg = MSG::default();
             loop {
                 let r = GetMessageW(&mut msg, None, 0, 0);
                 if r.0 <= 0 {
                     break;
+                }
+                if msg.message == WM_APP_WHEEL {
+                    let mouse_data = msg.wParam.0 as u32;
+                    let packed = msg.lParam.0;
+                    let sx = (packed as u16) as i32;
+                    let sy = ((packed >> 16) & 0xFFFF) as u16 as i32;
+                    let raw_delta = ((mouse_data >> 16) & 0xFFFF) as i16 as i32;
+                    let hwnd_v = NOTCH_HWND.load(Ordering::Relaxed);
+                    if hwnd_v != 0 {
+                        let hwnd = HWND(hwnd_v as isize as *mut _);
+                        let mut rect = RECT::default();
+                        if GetWindowRect(hwnd, &mut rect).is_ok() {
+                            let scale = state.scale.lock().map(|s| *s).unwrap_or(1.0);
+                            let x = (sx - rect.left) as f64 / scale;
+                            let y = (sy - rect.top) as f64 / scale;
+                            // 1 notch = 120 delta ~ 3 baris ~ 48 CSS px
+                            let dy = raw_delta as f64 / 120.0 * 48.0;
+                            let _ = app.emit(
+                                "notch-wheel",
+                                serde_json::json!({ "x": x, "y": y, "dy": dy }),
+                            );
+                            let _ = TranslateMessage(&msg);
+                            DispatchMessageW(&msg);
+                            continue;
+                        }
+                    }
                 }
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
