@@ -43,6 +43,7 @@ import {
 } from "./Pomodoro";
 import { PrayerSchedule } from "./PrayerSchedule";
 import { Coordinates, getNextPrayer } from "./prayer";
+import AgentPanel from "./AgentPanel";
 import {
   MODULES,
   MODULE_IDS,
@@ -1613,6 +1614,7 @@ export default function App() {
     if (activeModule === "todo" || activeModule === "shelf" || activeModule === "notifications") return 290;
     if (activeModule === "pomodoro") return 245;
     if (activeModule === "prayer") return 255;
+    if (activeModule === "agent") return 400;
     if (expandedView === "lyrics" || expandedView === "queue") return 320;
     if (activeModule === "perf") return 258;
     return dims.expanded_height || 232;
@@ -3052,6 +3054,26 @@ export default function App() {
             >
               <PrayerSchedule
                 coords={prayerCoords}
+                accentColor={settings.accentColor}
+              />
+            </motion.div>
+          ) : activeModule === "agent" ? (
+            /* AI Agent Module (standalone, 9Router) */
+            <motion.div
+              key="agent-module"
+              initial={{ opacity: 0, x: 24 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 24 }}
+              transition={{ duration: 0.18 }}
+              className="h-full px-6 pt-1 pb-2"
+            >
+              <AgentPanel
+                config={{
+                  apiKey: settings.agentApiKey,
+                  baseUrl: settings.agentBaseUrl,
+                  model: settings.agentModel,
+                  systemPrompt: settings.agentSystemPrompt,
+                }}
                 accentColor={settings.accentColor}
               />
             </motion.div>

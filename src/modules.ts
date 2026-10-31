@@ -1,4 +1,4 @@
-import { Activity, Bell, Compass, Layers, ListTodo, Music2, Timer } from "lucide-react";
+import { Activity, Bell, Bot, Compass, Layers, ListTodo, Music2, Timer } from "lucide-react";
 
 /**
  * Single source of truth for notch modules. Adding a feature = one entry here + its render branch;
@@ -11,7 +11,8 @@ export type ModuleId =
   | "shelf"
   | "perf"
   | "pomodoro"
-  | "prayer";
+  | "prayer"
+  | "agent";
 
 export interface ModuleDef {
   id: ModuleId;
@@ -27,6 +28,7 @@ export const MODULES: ModuleDef[] = [
   { id: "perf", label: "Performance HUD", icon: Activity },
   { id: "pomodoro", label: "Pomodoro", icon: Timer },
   { id: "prayer", label: "Jadwal Sholat", icon: Compass },
+  { id: "agent", label: "AI Agent", icon: Bot },
 ];
 
 export const MODULE_IDS: ModuleId[] = MODULES.map((m) => m.id);

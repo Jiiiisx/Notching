@@ -39,6 +39,12 @@ export interface NotchSettings {
   prayerLatitude: number;
   prayerLongitude: number;
   prayerTimezone: number;
+
+  // AI Agent standalone (OpenAI-compatible, mis. 9Router)
+  agentBaseUrl: string;
+  agentApiKey: string;
+  agentModel: string;
+  agentSystemPrompt: string;
 }
 
 export interface NotchNotification {
@@ -87,6 +93,13 @@ export const DEFAULT_NOTCH_SETTINGS: NotchSettings = {
   prayerLatitude: -6.2088,
   prayerLongitude: 106.8456,
   prayerTimezone: 7,
+
+  // AI Agent standalone (OpenAI-compatible, mis. 9Router)
+  agentBaseUrl: "https://api.9router.com/v1",
+  agentApiKey: "",
+  agentModel: "",
+  agentSystemPrompt:
+    "Kamu adalah asisten pribadi user, jawab singkat dan lugas dalam Bahasa Indonesia kecuali diminta lain.",
 };
 
 const STORAGE_KEY = "notch_custom_settings";

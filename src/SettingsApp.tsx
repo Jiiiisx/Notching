@@ -27,6 +27,7 @@ import {
   Smartphone,
   Laptop,
   Compass,
+  Bot,
 } from "lucide-react";
 import { emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -85,6 +86,7 @@ type TabId =
   | "motion"
   | "notifications"
   | "prayer"
+  | "agent"
   | "integrations"
   | "system";
 
@@ -299,6 +301,7 @@ export default function SettingsApp() {
       items: [
         { id: "notifications", label: "Notifikasi HP & PC", icon: Bell },
         { id: "prayer", label: "Jadwal Sholat", icon: Compass },
+        { id: "agent", label: "AI Agent", icon: Bot },
         { id: "integrations", label: "Integrasi Media", icon: Volume2 },
         { id: "system", label: "Startup & Sistem", icon: Power },
       ],
@@ -1642,6 +1645,67 @@ export default function SettingsApp() {
                         }
                         style={{ accentColor: settings.accentColor }}
                         className="w-full cursor-pointer disabled:opacity-50"
+                      />
+                    </div>
+                  </div>
+                </section>
+              </>
+            )}
+
+            {/* TAB: AGENT SETTINGS */}
+            {activeTab === "agent" && (
+              <>
+                <section className="space-y-3">
+                  <div className="bg-[#12141a] border border-white/[0.07] rounded-xl divide-y divide-white/[0.06]">
+                    {/* Base URL */}
+                    <div className="p-3.5 flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="text-[13px] font-semibold">Base URL (OpenAI-compatible)</div>
+                        <div className="text-[11px] text-white/45">Endpoint chat/completions, mis. https://api.9router.com/v1</div>
+                      </div>
+                      <input
+                        value={settings.agentBaseUrl}
+                        onChange={(e) => update({ agentBaseUrl: e.target.value })}
+                        className="w-72 h-8 rounded-lg border border-white/10 bg-white/[0.05] px-2.5 text-[12px] text-white/90 outline-none focus:border-white/25"
+                      />
+                    </div>
+                    {/* API key */}
+                    <div className="p-3.5 flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="text-[13px] font-semibold">API Key</div>
+                        <div className="text-[11px] text-white/45">Disimpan lokal di settings.json — tidak dikirim ke server lain</div>
+                      </div>
+                      <input
+                        type="password"
+                        value={settings.agentApiKey}
+                        onChange={(e) => update({ agentApiKey: e.target.value })}
+                        className="w-72 h-8 rounded-lg border border-white/10 bg-white/[0.05] px-2.5 text-[12px] text-white/90 outline-none focus:border-white/25"
+                      />
+                    </div>
+                    {/* Model */}
+                    <div className="p-3.5 flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="text-[13px] font-semibold">Model</div>
+                        <div className="text-[11px] text-white/45">Nama model persis seperti di 9Router</div>
+                      </div>
+                      <input
+                        value={settings.agentModel}
+                        onChange={(e) => update({ agentModel: e.target.value })}
+                        placeholder="mis. nama-model:gratis"
+                        className="w-72 h-8 rounded-lg border border-white/10 bg-white/[0.05] px-2.5 text-[12px] text-white/90 outline-none placeholder:text-white/25 focus:border-white/25"
+                      />
+                    </div>
+                    {/* System prompt */}
+                    <div className="p-3.5 flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="text-[13px] font-semibold">System Prompt</div>
+                        <div className="text-[11px] text-white/45">Kepribadian / gaya jawaban agent</div>
+                      </div>
+                      <textarea
+                        value={settings.agentSystemPrompt}
+                        onChange={(e) => update({ agentSystemPrompt: e.target.value })}
+                        rows={3}
+                        className="w-72 rounded-lg border border-white/10 bg-white/[0.05] px-2.5 py-1.5 text-[12px] text-white/90 outline-none resize-none focus:border-white/25"
                       />
                     </div>
                   </div>
