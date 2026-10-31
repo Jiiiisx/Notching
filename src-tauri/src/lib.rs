@@ -583,7 +583,8 @@ pub fn run() {
 
             if let Some(window) = app.get_webview_window("main") {
                 window_helper::setup_notch_window(&window);
-                hit_test::start_cursor_hit_test(window.clone(), hit_test_state);
+                hit_test::start_cursor_hit_test(window.clone(), hit_test_state.clone());
+                hit_test::start_wheel_redirect(app.handle().clone(), hit_test_state.clone());
             }
 
             let game_detector_state = Arc::new(game_detector::GameDetectorState::default());

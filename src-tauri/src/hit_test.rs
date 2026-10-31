@@ -1,10 +1,14 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{Emitter, WebviewWindow};
-use windows::Win32::Foundation::{HWND, POINT, RECT};
+use tauri::{AppHandle, Emitter, WebviewWindow};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
-use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, GetWindowRect};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CallNextHookEx, DispatchMessageW, GetMessageW, GetCursorPos, GetWindowRect, MSG, MSLLHOOKSTRUCT,
+    PostMessageW, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_MOUSE_LL,
+    WM_MOUSEHWHEEL, WM_MOUSEWHEEL,
+};
 
 #[derive(Debug, Clone)]
 pub struct PillGeometry {
@@ -29,6 +33,9 @@ impl Default for PillGeometry {
 pub struct HitTestState {
     pub geometry: Mutex<PillGeometry>,
     pub is_ignoring_cursor: AtomicBool,
+    // scale factor (device px per CSS px), kept fresh by the poll thread so the
+    // wheel hook can do the same inside-test without touching Tauri APIs.
+    pub scale: Mutex<f64>,
 }
 
 impl Default for HitTestState {
@@ -36,8 +43,110 @@ impl Default for HitTestState {
         Self {
             geometry: Mutex::new(PillGeometry::default()),
             is_ignoring_cursor: AtomicBool::new(true),
+            scale: Mutex::new(1.0),
         }
     }
+}
+
+// HWND of the notch top-level window, refreshed by the poll thread (changes on
+// monitor moves). The wheel hook uses it to redirect wheel events into the notch.
+static NOTCH_HWND: AtomicUsize = AtomicUsize::new(0);
+
+/// Same inside-test as the poll loop, callable from the wheel hook callback
+/// (no Tauri calls, no R/W-Lock on the webview: just rect + geometry).
+fn wheel_point_inside_notch(pt: (i32, i32), state: &HitTestState) -> bool {
+    let hwnd_v = NOTCH_HWND.load(Ordering::Relaxed);
+    if hwnd_v == 0 {
+        return false;
+    }
+    let hwnd = HWND(hwnd_v as isize as *mut _);
+    let mut rect = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut rect) }.is_err() {
+        return false;
+    }
+    let (pill_w, pill_h, extra_bottom) = match state.geometry.lock() {
+        Ok(g) => (g.width, g.height, g.extra_bottom),
+        Err(_) => (210.0, 36.0, 0.0),
+    };
+    let scale = state.scale.lock().map(|s| *s).unwrap_or(1.0);
+    let win_center_x = (rect.left + rect.right) / 2;
+    let pill_w_phys = (pill_w * scale).round() as i32;
+    let pill_h_phys = (pill_h * scale).round() as i32;
+    let pill_left = win_center_x - (pill_w_phys / 2) - 6;
+    let pill_right = win_center_x + (pill_w_phys / 2) + 6;
+    let pill_top = rect.top;
+    let pill_bottom = rect.top + pill_h_phys + 6 + (extra_bottom * scale) as i32;
+    pt.0 >= pill_left && pt.0 <= pill_right && pt.1 >= pill_top && pt.1 <= pill_bottom
+}
+
+unsafe extern "system" fn wheel_hook_proc(
+    code: i32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    unsafe {
+        // NOTE: callback-statics only; never call Tauri APIs from LL hooks.
+        if code >= 0 {
+            let msg = wparam.0 as u32;
+            if msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL {
+                let m = *(lparam.0 as *const MSLLHOOKSTRUCT);
+                // Geometry state is created in setup() before the hook starts.
+                if let Some(state) = WHEEL_STATE.get() {
+                    let pt = (m.pt.x, m.pt.y);
+                    if wheel_point_inside_notch(pt, state) {
+                        let hwnd_v = NOTCH_HWND.load(Ordering::Relaxed);
+                        if hwnd_v != 0 {
+                            // Re-post the wheel straight into the notch webview:
+                            // WM_MOUSEWHEEL wparam = MARKWPARAM(flags, delta),
+                            // lparam = MAKELPARAM(x, y). Swallow the original so
+                            // the window under the cursor (browser behind) never
+                            // scrolls while the pointer is over the notch.
+                            let delta = ((m.mouseData >> 16) & 0xFFFF) as isize;
+                            let wp = WPARAM((delta << 16) as usize);
+                            let lp = LPARAM(((pt.1 as isize) << 16) | (pt.0 as isize & 0xFFFF));
+                            let hwnd = HWND(hwnd_v as isize as *mut _);
+                            let _ = PostMessageW(Some(hwnd), msg, wp, lp);
+                            return LRESULT(1);
+                        }
+                    }
+                }
+            }
+        }
+        CallNextHookEx(None, code, wparam, lparam)
+    }
+}
+
+// Stored once at hook startup; OnceLock keeps the callback signature simple.
+static WHEEL_STATE: std::sync::OnceLock<Arc<HitTestState>> = std::sync::OnceLock::new();
+
+/// WH_MOUSE_LL hook: wheel events with the cursor inside the notch region are
+/// redirected into the notch webview and swallowed. This is the OS-level
+/// guarantee behind "scroll di notch tidak menggeser app di belakangnya".
+pub fn start_wheel_redirect(_app: AppHandle, state: Arc<HitTestState>) {
+    let _ = WHEEL_STATE.set(state);
+    let _ = std::thread::Builder::new()
+        .name("wheel-redirect-hook".into())
+        .spawn(move || unsafe {
+            let hook = match SetWindowsHookExW(
+                WH_MOUSE_LL,
+                Some(wheel_hook_proc),
+                std::option::Option::None,
+                0,
+            ) {
+                Ok(h) => h,
+                Err(_) => return,
+            };
+            let mut msg = MSG::default();
+            loop {
+                let r = GetMessageW(&mut msg, None, 0, 0);
+                if r.0 <= 0 {
+                    break;
+                }
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            let _ = UnhookWindowsHookEx(hook);
+        });
 }
 
 pub fn start_cursor_hit_test(
@@ -81,6 +190,10 @@ pub fn start_cursor_hit_test(
             }
 
             let scale = window.scale_factor().unwrap_or(1.0);
+            if let Ok(mut s) = state.scale.lock() {
+                *s = scale;
+            }
+            NOTCH_HWND.store(hwnd_val.0 as usize, Ordering::Relaxed);
             let win_center_x = (rect.left + rect.right) / 2;
             let pill_w_phys = (pill_w * scale).round() as i32;
             let pill_h_phys = (pill_h * scale).round() as i32;
