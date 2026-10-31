@@ -90,6 +90,74 @@ fn set_notch_size(
 }
 
 #[tauri::command]
+fn agent_run_tool(
+    app: AppHandle,
+    name: String,
+    args: serde_json::Value,
+) -> Result<String, String> {
+    use tauri_plugin_opener::OpenerExt;
+    match name.as_str() {
+        "open_url" => {
+            let url = args
+                .get("url")
+                .and_then(|v| v.as_str())
+                .ok_or("url wajib diisi")?;
+            let url = if url.starts_with("http://") || url.starts_with("https://") {
+                url.to_string()
+            } else {
+                format!("https://{}", url)
+            };
+            app.opener()
+                .open_url(&url, None::<&str>)
+                .map_err(|e| e.to_string())?;
+            Ok(format!("Dibuka: {}", url))
+        }
+        "open_search" => {
+            let query = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .ok_or("query wajib diisi")?;
+            let search_url = format!(
+                "https://www.google.com/search?q={}",
+                query.replace(' ', "+")
+            );
+            app.opener()
+                .open_url(&search_url, None::<&str>)
+                .map_err(|e| e.to_string())?;
+            Ok(format!("Pencarian dibuka: {}", query))
+        }
+        "media_play_pause" => {
+            media_toggle_play()?;
+            Ok("OK".to_string())
+        }
+        "media_next" => {
+            media_next_track()?;
+            Ok("OK".to_string())
+        }
+        "media_prev" => {
+            media_prev_track()?;
+            Ok("OK".to_string())
+        }
+        "set_volume" => {
+            let level = args
+                .get("level")
+                .and_then(|v| v.as_f64())
+                .ok_or("level wajib diisi (0..1)")?;
+            set_master_volume(app, level as f32)?;
+            Ok("OK".to_string())
+        }
+        "get_media" => {
+            let track = get_media_track().map_err(|e| e.to_string())?;
+            Ok(format!(
+                "judul={} artis={} memutar={}",
+                track.title, track.artist, track.is_playing
+            ))
+        }
+        _ => Err(format!("Tool {} tidak ada", name)),
+    }
+}
+
+#[tauri::command]
 fn update_notch_geometry(
     state: tauri::State<Arc<hit_test::HitTestState>>,
     game_state: tauri::State<Arc<game_detector::GameDetectorState>>,
@@ -513,6 +581,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_notch_config,
+            agent_run_tool,
             set_notch_state,
             set_notch_size,
             update_notch_geometry,
