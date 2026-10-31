@@ -379,15 +379,36 @@ export default function AgentPanel({
       const convo: { role: string; content: string }[] = [
         ...history.map((m) => ({ role: m.role as string, content: m.content })),
       ];
+      let lastExecuted: { name: string; ok: boolean; detail: string }[] = [];
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         const json = await callModel(controller, convo, systemContent);
         const msg = json.choices?.[0]?.message;
         if (!msg) throw new Error("Respons model kosong");
         const toolCalls = msg.tool_calls ?? [];
         if (toolCalls.length === 0) {
+          const cleaned = cleanOut(msg.content ?? "");
+          if (!cleaned && round > 0) {
+            // Model jawab kosong setelah eksekusi tool → jangan tampilkan
+            // bubble kosong; rangkum sendiri dari hasil tool (ponytail:
+            // teks generik, upgrade dengan per-tool phrasing kalau terasa kaku).
+            const okNames = lastExecuted.filter((e) => e.ok).map((e) => e.name);
+            const failNames = lastExecuted.filter((e) => !e.ok).map((e) => e.name);
+            const parts = [
+              okNames.length ? `dah kujalanin ${okNames.join(" dan ")}` : "",
+              failNames.length ? `tapi ${failNames.join(" dan ")} gagal` : "",
+            ].filter(Boolean);
+            const fallbackMsg: AgentMessage = {
+              role: "assistant",
+              content: parts.length ? `Oke, ${parts.join(", ")}.` : "Hmm, prosesnya kelewat tanpa hasil. Coba tanya lagi ya.",
+            };
+            const withFallback = [...history, fallbackMsg];
+            setMessages(withFallback);
+            save(withFallback);
+            return;
+          }
           const finalMsg: AgentMessage = {
             role: "assistant",
-            content: cleanOut(msg.content ?? ""),
+            content: cleaned,
           };
           const withAnswer = [...history, finalMsg];
           setMessages(withAnswer);
@@ -413,6 +434,13 @@ export default function AgentPanel({
           });
         }
         setToolMessages(executed);
+        lastExecuted = executed;
+        // Nudge: model sering balas kosong/verbatim setelah tool round.
+        convo.push({
+          role: "user",
+          content:
+            "Sekarang jawab user: rangkum hasil di atas dalam 1-2 kalimat santai (bahasa Indonesia, gaya teman), TANPA kode/tag markup/nama tool. Jangan jawab kosong.",
+        });
         setToolNote(null);
       }
       // hit tool round cap without a final text answer
