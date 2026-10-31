@@ -136,6 +136,83 @@ fn agent_read_skill_inner(path: std::path::PathBuf) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|e| e.to_string())
 }
 
+/// Cari file/dfolder berdasarkan nama (case-insensitive substring) di folder
+/// umum user, atau di `dir` kalau diberikan. Hard cap supaya tidak menggantung
+/// selamanya di drive besar.
+fn find_files(query: &str, dir: Option<&str>) -> Result<String, String> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    const MAX_SCAN: u32 = 30_000;
+    const MAX_HITS: usize = 30;
+
+    let mut roots: Vec<std::path::PathBuf> = match dir {
+        Some(d) => vec![std::path::PathBuf::from(d)],
+        None => {
+            let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE tidak ada")?;
+            ["Desktop", "Documents", "Downloads", "Pictures", "Videos", "Music"]
+                .iter()
+                .map(|d| std::path::PathBuf::from(&home).join(d))
+                .chain(std::iter::once(std::path::PathBuf::from("D:\\")))
+                .collect()
+        }
+    };
+    roots.retain(|p| p.exists());
+    // ponytail: skip hardcoded dir-name berat supaya walk cepat;
+    // kalau user butuh cari di SteamLibrary/node_modules, lewat argumen `dir`.
+    const SKIP: [&str; 6] = ["node_modules", ".git", "$RECYCLE.BIN", "System Volume Information", "steamapps", "AppData"];
+    let scanned = AtomicU32::new(0);
+    let mut hits: Vec<String> = Vec::new();
+    let mut stack = roots;
+    while let Some(d) = stack.pop() {
+        if scanned.load(Ordering::Relaxed) >= MAX_SCAN || hits.len() >= MAX_HITS {
+            break;
+        }
+        let Ok(read) = std::fs::read_dir(&d) else { continue };
+        for entry in read.flatten() {
+            if scanned.fetch_add(1, Ordering::Relaxed) >= MAX_SCAN {
+                break;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let p = entry.path();
+            if name.to_lowercase().contains(query) {
+                hits.push(p.to_string_lossy().into_owned());
+                if hits.len() >= MAX_HITS {
+                    break;
+                }
+            }
+            if p.is_dir() && !SKIP.iter().any(|s| name.eq_ignore_ascii_case(s)) {
+                stack.push(p);
+            }
+        }
+    }
+    if hits.is_empty() {
+        return Ok(format!("Tidak ada hasil untuk \"{query}\""));
+    }
+    let mut out = hits.join("\n");
+    if hits.len() >= MAX_HITS || scanned.load(Ordering::Relaxed) >= MAX_SCAN {
+        out.push_str("\n(berhenti lebih awal — percisikan query atau set arg `dir`)");
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod find_tests {
+    use super::find_files;
+    #[test]
+    fn finds_by_substring_case_insensitive() {
+        let dir = std::env::temp_dir().join("notch_find_test");
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        std::fs::write(dir.join("TesT_abc.txt"), "x").unwrap();
+        std::fs::write(dir.join("nested").join("important-laporan.docx"), "x").unwrap();
+        let out = find_files("test_abc", Some(dir.to_str().unwrap())).unwrap();
+        assert!(out.contains("TesT_abc.txt"), "{out}");
+        let out2 = find_files("laporan", Some(dir.to_str().unwrap())).unwrap();
+        assert!(out2.contains("important-laporan.docx"), "{out2}");
+        let none = find_files("tidakada", Some(dir.to_str().unwrap())).unwrap();
+        assert!(none.contains("Tidak ada hasil"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 #[tauri::command]
 fn agent_run_tool(
     app: AppHandle,
@@ -154,10 +231,59 @@ fn agent_run_tool(
             } else {
                 format!("https://{}", url)
             };
+            // Spotify deep link: buka lewat aplikasi Spotify desktop, bukan
+            // browser. open.spotify.com/<type>/<id> -> spotify:<type>:<id>.
+            // ponytail: cek apakah protokol spotify: terpasang lewat try-open;
+            // upgrade path: query registry HKEY_CLASSES_ROOT\spotify sekali.
+            if url.starts_with("https://open.spotify.com/") {
+                let segs: Vec<&str> = url
+                    .trim_start_matches("https://open.spotify.com/")
+                    .split(['/', '?', '#'])
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let segs = if segs.first() == Some(&"intl") { segs[1..].to_vec() } else { segs };
+                if segs.len() >= 2
+                    && matches!(
+                        segs[0],
+                        "track" | "album" | "playlist" | "artist" | "episode" | "show"
+                    )
+                    && segs[0] != "intl"
+                {
+                    let uri = format!("spotify:{}:{}", segs[0], segs[1]);
+                    if app.opener().open_url(&uri, None::<&str>).is_ok() {
+                        return Ok(format!("Dibuka lewat aplikasi Spotify: {uri}"));
+                    }
+                }
+            }
             app.opener()
                 .open_url(&url, None::<&str>)
                 .map_err(|e| e.to_string())?;
             Ok(format!("Dibuka: {}", url))
+        }
+        "find_file" => {
+            let query = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_lowercase())
+                .ok_or("query wajib diisi")?;
+            let dir = args.get("dir").and_then(|v| v.as_str()).map(String::from);
+            find_files(&query, dir.as_deref())
+        }
+        "open_file" => {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or("path wajib diisi")?;
+            let p = std::path::Path::new(path)
+                .canonicalize()
+                .map_err(|_| format!("File tidak ditemukan: {path}"))?;
+            if !p.is_file() {
+                return Err(format!("Bukan file (folder atau drive): {path}"));
+            }
+            app.opener()
+                .open_path(p.to_string_lossy().as_ref(), None::<&str>)
+                .map_err(|e| e.to_string())?;
+            Ok(format!("Dibuka: {}", p.display()))
         }
         "open_search" => {
             let query = args

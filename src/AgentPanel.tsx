@@ -31,11 +31,41 @@ const TOOLS = [
     type: "function",
     function: {
       name: "open_url",
-      description: "Buka URL di browser default user. Pakai untuk membuka situs/video/profil.",
+      description:
+        "Buka URL di browser default user (link Spotify otomatis dibuka lewat aplikasi Spotify desktop kalau terpasang).",
       parameters: {
         type: "object",
         properties: { url: { type: "string", description: "URL lengkap atau domain" } },
         required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "find_file",
+      description:
+        "Cari file di laptop berdasarkan nama (substring, tidak case-sensitive). Mencari di Desktop, Documents, Downloads, Pictures, Videos, Music, dan drive D:\\. Kembalikan daftar path lengkap.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Bagian nama file, mis. 'laporan' atau '.png'" },
+          dir: { type: "string", description: "Opsional: folder mulai searching, mis. 'D:\\Film'" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "open_file",
+      description:
+        "Buka file lokal dengan aplikasi default Windows. path harus absolut dan hasil dari find_file.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string", description: "Path absolut, mis. C:\\Users\\...\\laporan.docx" } },
+        required: ["path"],
       },
     },
   },
