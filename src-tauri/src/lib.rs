@@ -132,6 +132,102 @@ fn agent_read_skill(name: String) -> Result<String, String> {
     Ok(path)
 }
 
+/// File memori agent: %LOCALAPPDATA%\Notch\agent-memory.md — fakta permanen
+/// tentang user & laptop, diinjeksi ke system prompt tiap pesan.
+fn agent_memory_path() -> Option<std::path::PathBuf> {
+    let base = std::env::var("LOCALAPPDATA").ok()?;
+    let dir = std::path::Path::new(&base).join("Notch");
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join("agent-memory.md"))
+}
+
+#[tauri::command]
+fn agent_memory_read() -> Option<String> {
+    agent_memory_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| s.chars().take(8_000).collect())
+}
+
+#[tauri::command]
+fn agent_memory_append(line: String) -> Result<String, String> {
+    // runtime guard: satu baris saja, buang newline internal.
+        let line = line.replace(['\r', '\n'], "");
+    if line.trim().is_empty() {
+        return Err("Fakta kosong".into());
+    }
+    let path = agent_memory_path().ok_or("LOCALAPPDATA tidak ada")?;
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)
+        .map_err(|e| e.to_string())?;
+    writeln!(f, "{line}").map_err(|e| e.to_string())?;
+    // ponytail: file dibatasi 32KB — kalau penuh, potong baris terlama.
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() > 32_768 {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                let keep = &text[text.len() / 2..];
+                let _ = std::fs::write(&path, keep.rsplit_once('\n').map(|x| x.0).unwrap_or(keep));
+            }
+        }
+    }
+    Ok(format!("Tersimpan: {line}"))
+}
+
+/// Cari app terpasang berdasarkan nama lewat shortcut Start Menu & Desktop
+/// (.lnk). Kalau tidak ada, agent diminta bertanya ke user (bukan langsung
+/// buka browser).
+fn find_app(name: &str) -> Result<String, String> {
+    let needle = name.to_lowercase();
+    if needle.is_empty() {
+        return Err("Nama app kosong".into());
+    }
+    let mut roots = vec![
+        std::path::PathBuf::from("C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs"),
+    ];
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        roots.push(std::path::PathBuf::from(&appdata).join("Microsoft\\Windows\\Start Menu\\Programs"));
+    }
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        roots.push(std::path::PathBuf::from(&profile).join("Desktop"));
+    }
+    roots.push(std::path::PathBuf::from("C:\\Users\\Public\\Desktop"));
+    let mut hits: Vec<String> = Vec::new();
+    let mut stack = Vec::new();
+    for r in roots.iter() {
+        if r.exists() {
+            stack.push((r.clone(), 0u32));
+        }
+    }
+    while let Some((d, depth)) = stack.pop() {
+        if depth > 5 || hits.len() >= 20 {
+            continue;
+        }
+        let Ok(read) = std::fs::read_dir(&d) else { continue };
+        for entry in read.flatten() {
+            let p = entry.path();
+            let fname = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+            if fname == "desktop.ini" || fname == "temp" {
+                continue;
+            }
+            if fname.contains(&needle) && fname.ends_with(".lnk") {
+                hits.push(p.to_string_lossy().into_owned());
+            }
+            if p.is_dir() && hits.len() < 20 {
+                stack.push((p, depth + 1));
+            }
+        }
+    }
+    match hits.len() {
+        0 => Err(format!(
+            "App \"{name}\" tidak ditemukan di Start Menu/Desktop laptop ini. Tanyakan ke user: mau dibuka lewat browser atau tidak. Jangan buka apa pun sebelum user menjawab."
+        )),
+        1 => Ok(hits[0].clone()),
+        _ => Ok(format!(
+            "Banyak match, buka yang pertama atau tanya user jika ragu:\n{}",
+            hits.join("\n")
+        )),
+    }
+}
+
 fn agent_read_skill_inner(path: std::path::PathBuf) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|e| e.to_string())
 }
@@ -285,6 +381,21 @@ fn agent_run_tool(
                 .map_err(|e| e.to_string())?;
             Ok(format!("Dibuka: {}", p.display()))
         }
+        "open_app" => {
+            use tauri_plugin_opener::OpenerExt;
+            let name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or("name wajib diisi")?;
+            let path = find_app(name)?;
+            app.opener()
+                .open_path(&path, None::<&str>)
+                .map_err(|e| e.to_string())?;
+            Ok(format!("Dibuka app: {path}"))
+        }
+        "memory" => agent_memory_append(
+            args.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        ),
         "open_search" => {
             let query = args
                 .get("query")
@@ -758,6 +869,8 @@ pub fn run() {
             agent_run_tool,
             agent_list_skills,
             agent_read_skill,
+            agent_memory_read,
+            agent_memory_append,
             set_notch_state,
             set_notch_size,
             update_notch_geometry,

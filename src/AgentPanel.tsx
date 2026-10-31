@@ -72,6 +72,32 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "open_app",
+      description:
+        "Buka aplikasi yang terpasang di laptop user (dicari dari shortcut Start Menu & Desktop). PANGGIL INI DULU sebelum open_url kalau user minta membuka sebuah aplikasi/layanan (Gemini, Hermes, Spotify, dsb). Kalau gagal (tidak ada di laptop), bertanya dulu ke user: mau dibuka lewat browser atau tidak.",
+      parameters: {
+        type: "object",
+        properties: { name: { type: "string", description: "Nama app, mis. 'spotify' atau 'gemini'" } },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory",
+      description:
+        "Simpan fakta permanen tentang user & laptop ke memori agent (contoh: 'folder film di D:\\Film', 'user kampus UPN'). Panggil setiap kali mempelajari fakta penting yang belum ada di memori. Jangan simpan info sementara.",
+      parameters: {
+        type: "object",
+        properties: { content: { type: "string", description: "Satu fakta, satu baris" } },
+        required: ["content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "open_search",
       description: "Buka halaman pencarian Google untuk sebuah query.",
       parameters: {
@@ -281,7 +307,21 @@ export default function AgentPanel({
     const slash = text.match(/^\/skill\s+([^\s]+)/);
     const lower = text.toLowerCase();
     let skillName: string | null = null;
-    let systemContent = config.systemPrompt;
+    // Perilaku bawaan + memori agent (fakta permanen tentang user & laptop).
+    let memory = "";
+    try {
+      memory = (await invoke<string | null>("agent_memory_read")) ?? "";
+    } catch {
+      memory = "";
+    }
+    let systemContent =
+      config.systemPrompt +
+      `\n\n--- PERILAKU LOKAL (wajib) ---\n` +
+      `1. Jika user meminta membuka sebuah aplikasi/layanan di laptop (Gemini, Hermes, Spotify, VS Code, dsb): PANGGIL open_app PADA PERMUTAMA. Kalau open_app gagal (tidak terpasang), TANYAKAN DULU: "Tidak ketemu di laptop, mau dibuka lewat browser?" dan tunggu jawaban sebelum open_url.\n` +
+      `2. Jika konteksnya memang mencari/buka di web (search, situs, video, artikel, link): langsung open_search/open_url tanpa bertanya.\n` +
+      `3. Kamu MEMORI: fakta permanen user & laptop di bawah. Gunakan sebelum bertanya ulang hal yang sudah diketahui. Pelajari terus user & laptop: setiap kali menemukan fakta penting baru (preferensi, folder penting, app terpasang, kebiasaan), panggil tool memory.\n` +
+      `4. Cari file lokal pakai find_file, buka pakai open_file.\n` +
+      `--- MEMORI AGENT ---\n${memory || "(masih kosong)"}`;
     if (slash) {
       skillName = skillNames.find((n) => n.toLowerCase() === slash[1].toLowerCase()) ?? null;
       if (!skillName) {
