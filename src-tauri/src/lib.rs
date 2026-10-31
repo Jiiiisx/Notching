@@ -287,7 +287,13 @@ fn find_files(query: &str, dir: Option<&str>) -> Result<String, String> {
             let name = entry.file_name().to_string_lossy().into_owned();
             let p = entry.path();
             if name.to_lowercase().contains(query) {
-                hits.push(p.to_string_lossy().into_owned());
+                // Folder diberi trailing "\" supaya model tahu ini folder
+                // (open_file path folder → File Explorer).
+                let mut s = p.to_string_lossy().into_owned();
+                if p.is_dir() {
+                    s.push('\\');
+                }
+                hits.push(s);
                 if hits.len() >= MAX_HITS {
                     break;
                 }
@@ -404,12 +410,19 @@ fn agent_run_tool(
                 .ok_or("path wajib diisi")?;
             let p = std::path::Path::new(path)
                 .canonicalize()
-                .map_err(|_| format!("File tidak ditemukan: {path}"))?;
+                .map_err(|_| format!("Path tidak ditemukan: {path}"))?;
+            let p_str = p.to_string_lossy().replace(r"\\?\", "");
+            if p.is_dir() {
+                // Folder → File Explorer via `cmd /c start` (opener.open_path
+                // ternyata sering diam-diam gagal, sama kasusnya dgn .lnk).
+                open_shortcut(&p_str)?;
+                return Ok(format!("Folder dibuka di File Explorer: {p_str}"));
+            }
             if !p.is_file() {
-                return Err(format!("Bukan file (folder atau drive): {path}"));
+                return Err(format!("Bukan file/folder: {path}"));
             }
             app.opener()
-                .open_path(p.to_string_lossy().as_ref(), None::<&str>)
+                .open_path(&p_str, None::<&str>)
                 .map_err(|e| e.to_string())?;
             Ok(format!("Dibuka: {}", p.display()))
         }
@@ -419,6 +432,15 @@ fn agent_run_tool(
                 .get("name")
                 .and_then(|v| v.as_str())
                 .ok_or("name wajib diisi")?;
+            // Kalau user kasih path folder (ada di disk), buka di Explorer langsung.
+            let as_dir = std::path::Path::new(name);
+            if as_dir.is_dir() {
+                let dir_str = as_dir
+                    .to_string_lossy()
+                    .replace(r"\\?\", "");
+                open_shortcut(&dir_str)?;
+                return Ok(format!("Folder dibuka di File Explorer: {dir_str}"));
+            }
             let hits = find_app(name)?;
             if hits.len() > 1 {
                 // Jangan buka apa pun: biar model tanya user (nama app

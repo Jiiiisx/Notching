@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { Send, Square, Trash2, Wrench } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -6,6 +6,10 @@ import { invoke } from "@tauri-apps/api/core";
  * Lightweight agent chat. Calls an OpenAI-compatible endpoint directly (9Router)
  * from the webview — no Hermes involved. Tool loop (function calling) lets the
  * model act: open URLs, search, control media & volume. History in localStorage.
+ *
+ * RUNTIME DI MODULE SCOPE: loop tool + state percakapan TIDAK hidup di dalam
+ * komponen. Kalau notch collapse, AgentPanel unmount — mesin di bawah tetap
+ * jalan dan mount ulang menampilkan state yang sedang berjalan.
  */
 
 export interface AgentConfig {
@@ -16,7 +20,7 @@ export interface AgentConfig {
 }
 
 export interface AgentMessage {
-  role: "user" | "assistant" | "tool";
+  role: "user" | "assistant";
   content: string;
 }
 
@@ -45,11 +49,11 @@ const TOOLS = [
     function: {
       name: "find_file",
       description:
-        "Cari file di laptop berdasarkan nama (substring, tidak case-sensitive). Mencari di Desktop, Documents, Downloads, Pictures, Videos, Music, dan drive D:\\. Kembalikan daftar path lengkap.",
+        "Cari file ATAU folder di laptop berdasarkan nama (substring, tidak case-sensitive). Mencari di Desktop, Documents, Downloads, Pictures, Videos, Music, dan drive D:\\ (folder juga bisa cocok). Kembalikan daftar path lengkap.",
       parameters: {
         type: "object",
         properties: {
-          query: { type: "string", description: "Bagian nama file, mis. 'laporan' atau '.png'" },
+          query: { type: "string", description: "Bagian nama file/folder, mis. 'laporan' atau 'Film'" },
           dir: { type: "string", description: "Opsional: folder mulai searching, mis. 'D:\\Film'" },
         },
         required: ["query"],
@@ -61,10 +65,10 @@ const TOOLS = [
     function: {
       name: "open_file",
       description:
-        "Buka file lokal dengan aplikasi default Windows. path harus absolut dan hasil dari find_file.",
+        "Buka file ATAU folder lokal: file dibuka aplikasi default, FOLDER dibuka di File Explorer. path harus absolut (hasil find_file atau path yang user sebut).",
       parameters: {
         type: "object",
-        properties: { path: { type: "string", description: "Path absolut, mis. C:\\Users\\...\\laporan.docx" } },
+        properties: { path: { type: "string", description: "Path absolut, mis. C:\\Users\\...\\laporan.docx atau D:\\Film" } },
         required: ["path"],
       },
     },
@@ -197,130 +201,174 @@ async function loadSkills(): Promise<{ names: string[]; files: Record<string, st
   return { names, files };
 }
 
-// ponytail: history unbounded in storage but only last 20 go to the API —
-// upgrade path: trim store to last 200.
-export default function AgentPanel({
-  config,
-  accentColor,
-}: {
-  config: AgentConfig;
-  accentColor: string;
-}) {
-  const [messages, setMessages] = useState<AgentMessage[]>(loadHistory);
-  const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [toolNote, setToolNote] = useState<string | null>(null);
-  const [toolMessages, setToolMessages] = useState<
-    { name: string; ok: boolean; detail: string }[]
-  >([]);
-  const [error, setError] = useState<string | null>(null);
-  const [skillNames, setSkillNames] = useState<string[]>([]);
-  const skillFilesRef = useRef<Record<string, string>>({});
-  const [activeSkill, setActiveSkill] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
+/* ================= RUNTIME (module scope, tahan unmount) ================= */
 
-  useEffect(() => {
-    loadSkills().then(({ names, files }) => {
-      setSkillNames(names);
-      skillFilesRef.current = files;
-    });
-  }, []);
+type Exec = { name: string; ok: boolean; detail: string };
 
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, toolMessages]);
+interface AgentStore {
+  messages: AgentMessage[];
+  busy: boolean;
+  toolNote: string | null;
+  toolMessages: Exec[];
+  error: string | null;
+  activeSkill: string | null;
+  skillNames: string[];
+  skillFiles: Record<string, string>;
+}
 
-  const save = useCallback((msgs: AgentMessage[]) => {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(msgs.slice(-100)));
-  }, []);
+const store: AgentStore = {
+  messages: loadHistory(),
+  busy: false,
+  toolNote: null,
+  toolMessages: [],
+  error: null,
+  activeSkill: null,
+  skillNames: [],
+  skillFiles: {},
+};
 
-  const stop = () => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setBusy(false);
+const listeners = new Set<() => void>();
+function setStore(patch: Partial<AgentStore>) {
+  Object.assign(store, patch);
+  listeners.forEach((l) => l());
+}
+function runSkillLoad() {
+  loadSkills().then(({ names, files }) => setStore({ skillNames: names, skillFiles: files }));
+}
+runSkillLoad();
+
+function save(): void {
+  // ponytail: history unbounded in storage but only last 20 go to the API —
+  // upgrade path: trim store to last 200.
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(store.messages.slice(-100)));
+}
+
+let abortCtrl: AbortController | null = null;
+
+const cleanOut = (t: string) =>
+  t
+    // Buang sisa markup function-call model (</invoke>, <function_call>, dll)
+    .replace(/<\/?(?:function_call|invoke|parameter|antml:[a-z-]+)[^>]*>/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim()
+    .replace(/^(?:```xml|```)\n?/, "");
+
+async function callModel(
+  controller: AbortController,
+  convo: { role: string; content: string }[],
+  systemContent: string,
+  config: AgentConfig
+) {
+  const url = `${config.baseUrl.replace(/\/+$/, "")}/chat/completions`;
+  const res = await fetch(url, {
+    method: "POST",
+    signal: controller.signal,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${config.apiKey}`,
+    },
+    body: JSON.stringify({
+      model: config.model,
+      stream: false, // ponytail: tool loop needs whole JSON; streaming+tools needs delta.tool_calls parsing. Upgrade path: add SSE tool_call parsing when wanted.
+      messages: [
+        { role: "system", content: systemContent },
+        ...convo.slice(-MAX_CONTEXT_MESSAGES),
+      ],
+      tools: TOOLS,
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`HTTP ${res.status} ${body.slice(0, 200)}`);
+  }
+  return (await res.json()) as {
+    choices: {
+      message: {
+        role: "assistant";
+        content: string | null;
+        tool_calls?: { id: string; type: "function"; function: { name: string; arguments: string } }[];
+      };
+    }[];
   };
+}
 
-  const callModel = async (
-    controller: AbortController,
-    convo: { role: string; content: string }[],
-    systemContent: string
-  ) => {
-    const url = `${config.baseUrl.replace(/\/+$/, "")}/chat/completions`;
-    const res = await fetch(url, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: config.model,
-        stream: false, // ponytail: tool loop needs whole JSON; streaming+tools needs delta.tool_calls parsing. Upgrade path: add SSE tool_call parsing when wanted.
-        messages: [
-          { role: "system", content: systemContent },
-          ...convo.slice(-MAX_CONTEXT_MESSAGES),
-        ],
-        tools: TOOLS,
-      }),
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(`HTTP ${res.status} ${body.slice(0, 200)}`);
-    }
-    return (await res.json()) as {
-      choices: {
-        message: {
-          role: "assistant";
-          content: string | null;
-          tool_calls?: { id: string; type: "function"; function: { name: string; arguments: string } }[];
-        };
-      }[];
-    };
-  };
+async function runTool(name: string, rawArgs: string) {
+  let args: Record<string, unknown> = {};
+  try {
+    args = rawArgs ? (JSON.parse(rawArgs) as Record<string, unknown>) : {};
+  } catch {
+    return [name, false, "argumen JSON tidak valid"] as const;
+  }
+  try {
+    const out = await invoke("agent_run_tool", { name, args });
+    return [name, true, String(out)] as const;
+  } catch (e) {
+    return [name, false, String(e)] as const;
+  }
+}
 
-  const runTool = async (name: string, rawArgs: string) => {
-    let args: Record<string, unknown> = {};
-    try {
-      args = rawArgs ? (JSON.parse(rawArgs) as Record<string, unknown>) : {};
-    } catch {
-      return [name, false, "argumen JSON tidak valid"] as const;
-    }
-    try {
-      const out = await invoke("agent_run_tool", { name, args });
-      return [name, true, String(out)] as const;
-    } catch (e) {
-      return [name, false, String(e)] as const;
-    }
-  };
+export function agentStop() {
+  try {
+    abortCtrl?.abort();
+  } finally {
+    abortCtrl = null;
+  }
+  setStore({ busy: false, toolNote: null });
+}
 
-  const send = async () => {
-    const text = input.trim();
-    if (!text || busy) return;
-    if (!config.apiKey || !config.baseUrl || !config.model) {
-      setError("Isi API key, Base URL, dan model dulu di Settings → tab Agent.");
+export function agentClear() {
+  if (store.busy) agentStop();
+  setStore({
+    messages: [],
+    toolMessages: [],
+    toolNote: null,
+    activeSkill: null,
+    error: null,
+  });
+  localStorage.removeItem(HISTORY_KEY);
+}
+
+async function sendAgent(
+  text: string,
+  config: AgentConfig,
+  forcedSkill: string | null
+) {
+  agentStop();
+  setStore({ error: null, busy: true, toolMessages: [], toolNote: null, activeSkill: null });
+
+  // Skill: "/skill nama ..." memaksa satu skill; tanpa itu, keyword auto-match.
+  const slash = text.match(/^\/skill\s+([^\s]+)/);
+  const lower = text.toLowerCase();
+  let skillName: string | null = null;
+  if (slash) {
+    skillName =
+      store.skillNames.find((n) => n.toLowerCase() === slash[1].toLowerCase()) ?? null;
+    if (!skillName) {
+      setStore({
+        busy: false,
+        error: `Skill "${slash[1]}" tidak ditemukan. Ada: ${store.skillNames.join(", ") || "belum ada"}`,
+      });
       return;
     }
-    setError(null);
-    // Skill: "/skill nama ..." memaksa satu skill; tanpa itu, keyword auto-match.
-    const slash = text.match(/^\/skill\s+([^\s]+)/);
-    const lower = text.toLowerCase();
-    let skillName: string | null = null;
-    // Perilaku bawaan + memori agent (fakta permanen tentang user & laptop).
-    let memory = "";
-    try {
-      memory = (await invoke<string | null>("agent_memory_read")) ?? "";
-    } catch {
-      memory = "";
-    }
-  const cleanOut = (t: string) =>
-    t
-      // Buang sisa markup function-call model (</invoke>, <function_call>, dll)
-      .replace(/<\/?(?:function_call|invoke|parameter|antml:[a-z-]+)[^>]*>/g, "")
-      .replace(/[ \t]+\n/g, "\n")
-      .trim()
-      .replace(/^(?:```xml|```)\n?/, "");
+  } else {
+    skillName =
+      forcedSkill ??
+      store.skillNames.find((n) =>
+        (parseSkillMeta(store.skillFiles[n] ?? "").keywords ?? []).some(
+          (k) => k && lower.includes(k)
+        )
+      ) ??
+      null;
+  }
+
+  // Perilaku bawaan + memori agent (fakta permanen tentang user & laptop).
+  let memory = "";
+  try {
+    memory = (await invoke<string | null>("agent_memory_read")) ?? "";
+  } catch {
+    memory = "";
+  }
+
   const agentPersona =
     `\n\n--- KARAKTER (wajib dipatuhi) ---\n` +
     `Bicara seperti teman dekat orang Indonesia: bahasa santai (makasih, gaskeun, wkwk boleh, tapi jangan berlebihan), enggak formal, enggak seperti robot/CS.\n` +
@@ -328,7 +376,7 @@ export default function AgentPanel({
     `Jawaban pendek dan manusiawi. Kasih opini atau reaksi ringan, tanya balik kalau perlu. Jangan mulai dengan "Tentu!", "Baik,", atau kalimat asisten. Jendela percakapan: user mau tempat bercerita juga, bukan cuma minta komando.\n` +
     `Boleh pakai sedikit emoji yang relevan kalau konteksnya musik/kegiatan; enggak wajib.\n` +
     `Contoh gaya jawaban:\n` +
-    `- "Dah kebuka tuh di Spotify, cari 2001x Ada Khalif. Tinggal tap lagunya biar mulai." ` +
+    `- "Dah kebuka tuh di Spotify, cari 2001x Ada Khalif. Tinggal tap lagunya biar mulai."\n` +
     `- "Ada dua, Spotify mana yang kamu maksud? Yang biasa atau Spotify Studio Labs?"\n`;
   let systemContent =
       config.systemPrompt +
@@ -338,135 +386,146 @@ export default function AgentPanel({
       `2. Untuk perintah musik Spotify ('setel/play lagu X'): open_url dengan url \`https://open.spotify.com/search/<judul lagu plus artis>\` — ini OTOMATIS dibuka di aplikasi Spotify desktop di halaman pencarian lagu itu (dipilih user untuk play). Kalau ada link open.spotify.com/track/... dari user, pakai link itu.\n` +
       `3. Untuk mencari/buka di web (search, situs, video, artikel, link): langsung open_search/open_url tanpa bertanya. Untuk MEMBUKA APLIKASI desktop (Gemini, Hermes, VS Code, dsb), open_app dulu. Jika tidak terpasang, bertanya dulu sebelum open_url.\n` +
       `4. Kamu MEMORI: fakta permanen user & laptop di bawah. Gunakan sebelum bertanya ulang hal yang sudah diketahui. Pelajari terus user & laptop: setiap kali menemukan fakta penting baru (preferensi, folder penting, app terpasang, kebiasaan), panggil tool memory.\n` +
-      `5. Cari file lokal pakai find_file, buka pakai open_file.\n` +
+      `5. USER MINTA BUKA FILE ATAU FOLDER DI LAPTOP: find_file dulu untuk temukan path-nya, lalu open_file dengan SALAH SATU path hasilnya — jangan cuma menceritakan hasil pencarian. FOLDER dibuka open_file juga (kebuka di File Explorer).\n` +
       `--- MEMORI AGENT ---\n${memory || "(masih kosong)"}`;
-    if (slash) {
-      skillName = skillNames.find((n) => n.toLowerCase() === slash[1].toLowerCase()) ?? null;
-      if (!skillName) {
-        setError(`Skill "${slash[1]}" tidak ditemukan. Ada: ${skillNames.join(", ") || "belum ada"}`);
-        return;
-      }
-    } else {
-      skillName =
-        skillNames.find((n) =>
-          (parseSkillMeta(skillFilesRef.current[n] ?? "").keywords ?? []).some(
-            (k) => k && lower.includes(k)
-          )
-        ) ?? null;
-    }
-    if (skillName) {
-      const body = skillBody(skillFilesRef.current[skillName] ?? "");
-      systemContent =
-        `${config.systemPrompt}\n\n--- SKILL DIAKTIFKAN: ${skillName} ---\n` +
-        body +
-        `\n--- GUNAKAN pengetahuan skill ini untuk menjawab (jangan sebut "skill" atau "injeksi") ---`;
-    }
-    setInput("");
-    setActiveSkill(skillName);
-    const userMsg: AgentMessage = { role: "user", content: text };
-    const history = [...messages, userMsg];
-    setMessages(history);
-    save(history);
-    setBusy(true);
-    setToolMessages([]);
-    setToolNote(null);
-    const controller = new AbortController();
-    abortRef.current = controller;
+  if (skillName) {
+    const body = skillBody(store.skillFiles[skillName] ?? "");
+    systemContent =
+      `${config.systemPrompt}\n\n--- SKILL DIAKTIFKAN: ${skillName} ---\n` +
+      body +
+      `\n--- GUNAKAN pengetahuan skill ini untuk menjawab (jangan sebut "skill" atau "injeksi") ---`;
+  }
 
-    try {
-      // Tool loop: model may request tool calls; execute them locally, feed
-      // results back, and let it produce the final answer. Capped rounds.
-      const convo: { role: string; content: string }[] = [
-        ...history.map((m) => ({ role: m.role as string, content: m.content })),
-      ];
-      let lastExecuted: { name: string; ok: boolean; detail: string }[] = [];
-      for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-        const json = await callModel(controller, convo, systemContent);
-        const msg = json.choices?.[0]?.message;
-        if (!msg) throw new Error("Respons model kosong");
-        const toolCalls = msg.tool_calls ?? [];
-        if (toolCalls.length === 0) {
-          const cleaned = cleanOut(msg.content ?? "");
-          if (!cleaned && round > 0) {
-            // Model jawab kosong setelah eksekusi tool → jangan tampilkan
-            // bubble kosong; rangkum sendiri dari hasil tool (ponytail:
-            // teks generik, upgrade dengan per-tool phrasing kalau terasa kaku).
-            const okNames = lastExecuted.filter((e) => e.ok).map((e) => e.name);
-            const failNames = lastExecuted.filter((e) => !e.ok).map((e) => e.name);
-            const parts = [
-              okNames.length ? `dah kujalanin ${okNames.join(" dan ")}` : "",
-              failNames.length ? `tapi ${failNames.join(" dan ")} gagal` : "",
-            ].filter(Boolean);
-            const fallbackMsg: AgentMessage = {
+  setStore({ activeSkill: skillName });
+  const userMsg: AgentMessage = { role: "user", content: text };
+  const baseHistory: AgentMessage[] = [...store.messages, userMsg];
+  setStore({ messages: baseHistory });
+  save();
+  const controller = new AbortController();
+  abortCtrl = controller;
+
+  try {
+    // Tool loop: model may request tool calls; execute them locally, feed
+    // results back, and let it produce the final answer. Capped rounds.
+    const convo: { role: string; content: string }[] = [
+      ...baseHistory.map((m) => ({ role: m.role as string, content: m.content })),
+    ];
+    let history = baseHistory;
+    let lastExecuted: Exec[] = [];
+    for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+      const json = await callModel(controller, convo, systemContent, config);
+      const msg = json.choices?.[0]?.message;
+      if (!msg) throw new Error("Respons model kosong");
+      const toolCalls = msg.tool_calls ?? [];
+      if (toolCalls.length === 0) {
+        const cleaned = cleanOut(msg.content ?? "");
+        if (!cleaned && round > 0) {
+          // Model jawab kosong setelah eksekusi tool → jangan tampilkan
+          // bubble kosong; rangkum sendiri dari hasil tool (ponytail:
+          // teks generik, upgrade dengan per-tool phrasing kalau terasa kaku).
+          const okNames = lastExecuted.filter((e) => e.ok).map((e) => e.name);
+          const failNames = lastExecuted.filter((e) => !e.ok).map((e) => e.name);
+          const parts = [
+            okNames.length ? `dah kujalanin ${okNames.join(" dan ")}` : "",
+            failNames.length ? `tapi ${failNames.join(" dan ")} gagal` : "",
+          ].filter(Boolean);
+          history = [
+            ...history,
+            {
               role: "assistant",
-              content: parts.length ? `Oke, ${parts.join(", ")}.` : "Hmm, prosesnya kelewat tanpa hasil. Coba tanya lagi ya.",
-            };
-            const withFallback = [...history, fallbackMsg];
-            setMessages(withFallback);
-            save(withFallback);
-            return;
-          }
-          const finalMsg: AgentMessage = {
-            role: "assistant",
-            content: cleaned,
-          };
-          const withAnswer = [...history, finalMsg];
-          setMessages(withAnswer);
-          save(withAnswer);
+              content: parts.length
+                ? `Oke, ${parts.join(", ")}.`
+                : "Hmm, prosesnya kelewat tanpa hasil. Coba tanya lagi ya.",
+            },
+          ];
+          setStore({ messages: history });
+          save();
           return;
         }
-        if (msg.content) {
-          // progressive assistant text between tool rounds
-          const withText = [...history, { role: "assistant", content: cleanOut(msg.content) } as AgentMessage];
-          setMessages(withText);
-        }
-        setToolNote(`Menjalankan ${toolCalls.map((c) => c.function.name).join(", ")}…`);
-        const executed: { name: string; ok: boolean; detail: string }[] = [];
-        for (const call of toolCalls) {
-          const [name, ok, detail] = await runTool(
-            call.function.name,
-            call.function.arguments
-          );
-          executed.push({ name, ok, detail });
-          convo.push({
-            role: "assistant",
-            content: `${name} → ${ok ? "OK" : "GAGAL"}: ${detail}`,
-          });
-        }
-        setToolMessages(executed);
-        lastExecuted = executed;
-        // Nudge: model sering balas kosong/verbatim setelah tool round.
+        history = [...history, { role: "assistant", content: cleaned }];
+        setStore({ messages: history });
+        save();
+        return;
+      }
+      if (msg.content) {
+        // progressive assistant text between tool rounds
+        history = [...history, { role: "assistant", content: cleanOut(msg.content) }];
+        setStore({ messages: history });
+      }
+      setStore({ toolNote: `Menjalankan ${toolCalls.map((c) => c.function.name).join(", ")}…` });
+      const executed: Exec[] = [];
+      for (const call of toolCalls) {
+        const [name, ok, detail] = await runTool(
+          call.function.name,
+          call.function.arguments
+        );
+        executed.push({ name, ok, detail });
         convo.push({
-          role: "user",
-          content:
-            "Sekarang jawab user: rangkum hasil di atas dalam 1-2 kalimat santai (bahasa Indonesia, gaya teman), TANPA kode/tag markup/nama tool. Jangan jawab kosong.",
+          role: "assistant",
+          content: `${name} → ${ok ? "OK" : "GAGAL"}: ${detail}`,
         });
-        setToolNote(null);
       }
-      // hit tool round cap without a final text answer
-      const capMsg: AgentMessage = {
-        role: "assistant",
-        content: "Berhenti: batas putaran tool tercapai tanpa jawaban final.",
-      };
-      const withCap = [...history, capMsg];
-      setMessages(withCap);
-      save(withCap);
-    } catch (e) {
-      if ((e as Error).name !== "AbortError") {
-        setError(`Gagal: ${(e as Error).message}`);
-      }
-    } finally {
-      abortRef.current = null;
-      setBusy(false);
-      setToolNote(null);
+      setStore({ toolMessages: executed });
+      lastExecuted = executed;
+      // Nudge: model sering balas kosong/verbatim setelah tool round.
+      convo.push({
+        role: "user",
+        content:
+          "Sekarang jawab user: rangkum hasil di atas dalam 1-2 kalimat santai (bahasa Indonesia, gaya teman), TANPA kode/tag markup/nama tool. Jangan jawab kosong.",
+      });
+      setStore({ toolNote: null });
     }
-  };
+    // hit tool round cap without a final text answer
+    history = [
+      ...history,
+      { role: "assistant", content: "Berhenti: batas putaran tool tercapai tanpa jawaban final." },
+    ];
+    setStore({ messages: history });
+    save();
+  } catch (e) {
+    if ((e as Error).name !== "AbortError") {
+      setStore({ error: `Gagal: ${(e as Error).message}` });
+    }
+  } finally {
+    abortCtrl = null;
+    setStore({ busy: false, toolNote: null });
+  }
+}
 
-  const clear = () => {
-    if (busy) stop();
-    setMessages([]);
-    setToolMessages([]);
-    localStorage.removeItem(HISTORY_KEY);
+/* ================= PANEL (hanya tampilan) ================= */
+
+// ponytail: history unbounded in storage but only last 20 go to the API —
+// upgrade path: trim store to last 200.
+export default function AgentPanel({
+  config,
+  accentColor,
+}: {
+  config: AgentConfig;
+  accentColor: string;
+}) {
+  const [, tick] = useReducer((c: number) => c + 1, 0);
+  useEffect(() => {
+    listeners.add(tick);
+    return () => void listeners.delete(tick);
+  }, []);
+  const [input, setInput] = useState("");
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const { messages, busy, toolNote, toolMessages, error, activeSkill } = store;
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages, toolMessages]);
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text || busy) return;
+    if (!config.apiKey || !config.baseUrl || !config.model) {
+      setStore({ error: "Isi API key, Base URL, dan model dulu di Settings → tab Agent." });
+      return;
+    }
+    setInput("");
+    await sendAgent(text, config, store.activeSkill);
   };
 
   return (
@@ -477,7 +536,7 @@ export default function AgentPanel({
           {activeSkill && <span style={{ color: accentColor }}> · skill: {activeSkill}</span>}
         </div>
         <button
-          onClick={clear}
+          onClick={agentClear}
           title="Hapus riwayat chat"
           className="rounded p-1 text-white/40 hover:bg-white/10 hover:text-white/80"
         >
@@ -548,7 +607,7 @@ export default function AgentPanel({
         />
         {busy ? (
           <button
-            onClick={stop}
+            onClick={agentStop}
             className="flex h-8 w-8 items-center justify-center rounded-lg bg-red-500/20 text-red-300 hover:bg-red-500/30"
             title="Stop"
           >
