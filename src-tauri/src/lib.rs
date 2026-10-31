@@ -97,6 +97,7 @@ fn update_notch_geometry(
     width: Option<f64>,
     height: Option<f64>,
     natural_width: Option<f64>,
+    extra_bottom: Option<f64>,
 ) {
     if let Ok(mut lock) = state.geometry.lock() {
         lock.is_expanded = is_expanded;
@@ -105,6 +106,9 @@ fn update_notch_geometry(
         }
         if let Some(h) = height {
             lock.height = h;
+        }
+        if let Some(eb) = extra_bottom {
+            lock.extra_bottom = eb.max(0.0);
         }
     }
     if let Some(nw) = natural_width {

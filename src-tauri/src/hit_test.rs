@@ -11,6 +11,8 @@ pub struct PillGeometry {
     pub is_expanded: bool,
     pub width: f64,
     pub height: f64,
+    // tambahan tinggi interaksi di bawah pill (popup menu "..." mengoverflow panel)
+    pub extra_bottom: f64,
 }
 
 impl Default for PillGeometry {
@@ -19,6 +21,7 @@ impl Default for PillGeometry {
             is_expanded: false,
             width: 210.0,
             height: 36.0,
+            extra_bottom: 0.0,
         }
     }
 }
@@ -52,11 +55,11 @@ pub fn start_cursor_hit_test(
         loop {
             std::thread::sleep(Duration::from_millis(16)); // ~60 Hz
 
-            let (pill_w, pill_h) = {
+            let (pill_w, pill_h, extra_bottom) = {
                 if let Ok(lock) = state.geometry.lock() {
-                    (lock.width, lock.height)
+                    (lock.width, lock.height, lock.extra_bottom)
                 } else {
-                    (210.0, 36.0)
+                    (210.0, 36.0, 0.0)
                 }
             };
 
@@ -86,7 +89,7 @@ pub fn start_cursor_hit_test(
             let pill_left = win_center_x - (pill_w_phys / 2) - 6;
             let pill_right = win_center_x + (pill_w_phys / 2) + 6;
             let pill_top = rect.top;
-            let pill_bottom = rect.top + pill_h_phys + 6;
+            let pill_bottom = rect.top + pill_h_phys + 6 + (extra_bottom * scale) as i32;
 
             let inside_pill = pt.x >= pill_left
                 && pt.x <= pill_right

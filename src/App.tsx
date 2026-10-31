@@ -797,6 +797,45 @@ export default function App() {
     }
   }, [isCompact]);
 
+  // Pause auto-collapse while a popup menu is open or a text field inside the notch has focus —
+  // menus overflow the notch rect (triggering mouseleave) and typing must never shrink the panel.
+  const interactiveRef = useRef(false);
+  const quickMenuOpenRef = useRef(false);
+  const audioSwitcherOpenRef = useRef(false);
+  const recomputeInteractive = () => {
+    const el = document.activeElement;
+    const typing =
+      !!el &&
+      (el.tagName === "INPUT" ||
+        el.tagName === "TEXTAREA" ||
+        (el as HTMLElement).isContentEditable === true);
+    interactiveRef.current = typing || quickMenuOpenRef.current || audioSwitcherOpenRef.current;
+  };
+  useEffect(() => {
+    const onFocusOut = () => window.setTimeout(recomputeInteractive, 0);
+    document.addEventListener("focusin", recomputeInteractive);
+    document.addEventListener("focusout", onFocusOut, true);
+    return () => {
+      document.removeEventListener("focusin", recomputeInteractive);
+      document.removeEventListener("focusout", onFocusOut, true);
+    };
+  }, []);
+  useEffect(() => {
+    quickMenuOpenRef.current = showQuickMenu;
+    audioSwitcherOpenRef.current = showAudioSwitcher;
+    recomputeInteractive();
+    // Menu baru saja dibuka: batalkan timer collapse yang mungkin sudah terjadwal
+    // (cursor keluar rect notch saat menu melewati batas → mouseleave menjadwalkan collapse)
+    if (showQuickMenu || showAudioSwitcher) {
+      if (collapseTimerRef.current) {
+        window.clearTimeout(collapseTimerRef.current);
+        collapseTimerRef.current = null;
+      }
+      // sinkronkan zona hit-test bila zona menu mengoverflow panel
+      updateGeometry(expanded, targetWidth, targetHeight);
+    }
+  }, [showQuickMenu, showAudioSwitcher]);
+
   const isInsideNotch = (clientX: number, clientY: number): boolean => {
     if (!notchRef.current) return false;
     const rect = notchRef.current.getBoundingClientRect();
@@ -975,6 +1014,9 @@ export default function App() {
 
   const scheduleCollapse = (delay = 140) => {
     if (isPinned) return;
+    // Jangan auto-collapse saat ada menu popup terbuka atau user sedang fokus mengetik
+    // di input dalam notch (dropdown "..." melewati batas rect notch, TodoList input)
+    if (interactiveRef.current) return;
     if (collapseTimerRef.current) return;
     collapseTimerRef.current = window.setTimeout(() => {
       collapseTimerRef.current = null;
@@ -1584,11 +1626,14 @@ export default function App() {
   ) => {
     const activeWidth = customWidth ?? targetWidth;
     const activeHeight = customHeight ?? targetHeight;
+    // Popup menu "..." mengoverflow (max-h 220px + offset): perluas zona klik hit-test ke bawah
+    const menuOverflow = showQuickMenu ? 240 : 0;
     invoke("update_notch_geometry", {
       isExpanded: isExp,
       width: Math.ceil(activeWidth),
       height: Math.ceil(activeHeight),
       naturalWidth: Math.ceil(naturalCollapsedWidth),
+      extraBottom: menuOverflow,
     }).catch(() => {});
   };
 
