@@ -21,8 +21,33 @@ export interface NotchSettings {
   gameModeAutoShift: boolean; // Auto-shift to secondary monitor or hide during fullscreen games
 
   // Behavior & Sizing
+  pinnedModules: string[]; // module ids shown as header icons, in order (max 5); the rest overflow
+  expandTrigger: "hover" | "click"; // What opens the Notch: hover only, or click only
   compactMode: boolean; // Manual compact pill mode (22px high, 110px wide)
   smartTabAvoidance: boolean; // Auto-compact when browser or IDE is maximized
+
+  // Notifications (Phone Link & Laptop)
+  notificationsEnabled: boolean; // Master toggle for Notch notifications
+  phoneNotificationsEnabled: boolean; // Notifications from phone via Windows Phone Link / Bluetooth
+  laptopNotificationsEnabled: boolean; // Notifications from Windows desktop apps
+  dndInGameMode: boolean; // Suppress popup banner while in fullscreen game
+  notificationPopDuration: number; // 2.5 to 7.0 seconds, default 4.0
+
+  // Prayer reminder
+  prayerReminderEnabled: boolean; // 10-minute warning before azan
+  prayerCity: string; // Preset city name, e.g. "Jakarta / Jabodetabek"
+  prayerLatitude: number;
+  prayerLongitude: number;
+  prayerTimezone: number;
+}
+
+export interface NotchNotification {
+  id: number;
+  source: "phone" | "laptop";
+  app_name: string;
+  title: string;
+  body: string;
+  timestamp_ms: number;
 }
 
 export interface MonitorOption {
@@ -48,8 +73,20 @@ export const DEFAULT_NOTCH_SETTINGS: NotchSettings = {
   leadTime: 0.3,
   targetMonitor: "primary",
   gameModeAutoShift: true,
+  pinnedModules: ["media", "notifications", "todo", "shelf", "perf"],
+  expandTrigger: "hover",
   compactMode: false,
   smartTabAvoidance: true,
+  notificationsEnabled: true,
+  phoneNotificationsEnabled: true,
+  laptopNotificationsEnabled: true,
+  dndInGameMode: true,
+  notificationPopDuration: 4.0,
+  prayerReminderEnabled: true,
+  prayerCity: "Jakarta / Jabodetabek",
+  prayerLatitude: -6.2088,
+  prayerLongitude: 106.8456,
+  prayerTimezone: 7,
 };
 
 const STORAGE_KEY = "notch_custom_settings";
@@ -58,7 +95,12 @@ export function loadSettings(): NotchSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      return { ...DEFAULT_NOTCH_SETTINGS, ...JSON.parse(raw) };
+      const merged = { ...DEFAULT_NOTCH_SETTINGS, ...JSON.parse(raw) };
+      // Legacy "both" (hover+click) is gone; fall back to the hover behaviour
+      if ((merged.expandTrigger as string) !== "click") {
+        merged.expandTrigger = "hover";
+      }
+      return merged;
     }
   } catch (e) {
     console.error("Failed to read settings from localStorage:", e);

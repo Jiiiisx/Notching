@@ -183,7 +183,7 @@ export const AudioSwitcher: React.FC<AudioSwitcherProps> = ({
         <div className="shrink-0 flex items-center gap-1.5">
           {isCurrent && (
             <span
-              className="flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded-full font-semibold border"
+              className="flex items-center gap-1 text-[11px] font-mono px-2 py-0.5 rounded-full font-semibold border"
               style={{
                 backgroundColor: `${accentColor}1a`,
                 borderColor: `${accentColor}40`,
@@ -217,7 +217,7 @@ export const AudioSwitcher: React.FC<AudioSwitcherProps> = ({
             className="w-2 h-2 rounded-full shadow-[0_0_8px_rgba(255,255,255,0.4)]"
             style={{ backgroundColor: accentColor }}
           />
-          <span className="text-[11px] font-mono tracking-wider text-neutral-300 uppercase font-semibold">
+          <span className="text-xs font-mono tracking-wider text-neutral-300 uppercase font-semibold">
             Audio Switcher & Volume
           </span>
         </div>
@@ -279,7 +279,7 @@ export const AudioSwitcher: React.FC<AudioSwitcherProps> = ({
               accentColor: accentColor,
             }}
           />
-          <span className="text-[11px] font-mono text-neutral-400 w-10 text-right tabular-nums shrink-0">
+          <span className="text-xs font-mono text-neutral-400 w-10 text-right tabular-nums shrink-0">
             {isMuted ? "Mute" : `${Math.round(volume * 100)}%`}
           </span>
         </div>
@@ -332,7 +332,7 @@ export const AudioSwitcher: React.FC<AudioSwitcherProps> = ({
         {/* Output Section */}
         {(activeTab === "all" || activeTab === "output") && (
           <div className="space-y-1">
-            <div className="flex items-center justify-between px-1 text-[10px] font-mono text-neutral-400 uppercase tracking-wider">
+            <div className="flex items-center justify-between px-1 text-[11px] font-mono text-neutral-400 uppercase tracking-wider">
               <span>Output (Playback)</span>
               <span>{outputs.length} perangkat</span>
             </div>
@@ -349,7 +349,7 @@ export const AudioSwitcher: React.FC<AudioSwitcherProps> = ({
         {/* Input Section */}
         {(activeTab === "all" || activeTab === "input") && (
           <div className="space-y-1 pt-1">
-            <div className="flex items-center justify-between px-1 text-[10px] font-mono text-neutral-400 uppercase tracking-wider">
+            <div className="flex items-center justify-between px-1 text-[11px] font-mono text-neutral-400 uppercase tracking-wider">
               <span>Input (Microphone)</span>
               <span>{inputs.length} perangkat</span>
             </div>

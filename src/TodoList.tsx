@@ -159,7 +159,7 @@ export function TodoList({
             type="button"
             onClick={onClearCompleted}
             title="Clear completed tasks"
-            className="text-[10px] font-mono text-neutral-500 hover:text-neutral-300 px-1 py-1 rounded hover:bg-white/5 transition-colors whitespace-nowrap"
+            className="text-[11px] font-mono text-neutral-500 hover:text-neutral-300 px-1 py-1 rounded hover:bg-white/5 transition-colors whitespace-nowrap"
           >
             Clear done
           </button>

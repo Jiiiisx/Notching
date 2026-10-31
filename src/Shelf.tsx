@@ -498,14 +498,14 @@ export function Shelf({
         <div className="flex items-center justify-between px-0.5">
           <div className="flex items-center gap-1.5">
             <span
-              className="text-[10px] font-mono tracking-wider uppercase text-neutral-400"
+              className="text-[11px] font-mono tracking-wider uppercase text-neutral-400"
               style={{ fontSize: `${10 * fontSizeScale}px` }}
             >
               Quick Shortcuts
             </span>
             {isDraggingOver && dragY !== null && dragY <= 140 && (
               <span
-                className="text-[9px] font-mono px-1.5 py-0.5 rounded animate-pulse"
+                className="text-[10px] font-mono px-1.5 py-0.5 rounded animate-pulse"
                 style={{ backgroundColor: `${accentColor}25`, color: accentColor }}
               >
                 + Drop to add as Shortcut / App
@@ -516,7 +516,7 @@ export function Shelf({
             type="button"
             onClick={() => setShowAddModal(true)}
             title="Add Custom Shortcut"
-            className="flex items-center gap-1 text-[10px] font-mono text-neutral-400 hover:text-white transition-colors px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 border border-white/5"
+            className="flex items-center gap-1 text-[11px] font-mono text-neutral-400 hover:text-white transition-colors px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 border border-white/5"
           >
             <Plus className="w-3 h-3" />
             <span>Add</span>
@@ -562,14 +562,14 @@ export function Shelf({
         <div className="flex items-center justify-between px-0.5">
           <div className="flex items-center gap-1.5">
             <span
-              className="text-[10px] font-mono tracking-wider uppercase text-neutral-400"
+              className="text-[11px] font-mono tracking-wider uppercase text-neutral-400"
               style={{ fontSize: `${10 * fontSizeScale}px` }}
             >
               File Shelf & Stash
             </span>
             {stashedFiles.length > 0 && (
               <span
-                className="px-1.5 py-0.2 text-[9px] font-mono rounded bg-white/10"
+                className="px-1.5 py-0.2 text-[10px] font-mono rounded bg-white/10"
                 style={{ color: accentColor }}
               >
                 {stashedFiles.length}
@@ -582,7 +582,7 @@ export function Shelf({
               type="button"
               onClick={handleClearStash}
               title="Clear Stash"
-              className="text-[10px] font-mono text-neutral-400 hover:text-rose-400 transition-colors flex items-center gap-1"
+              className="text-[11px] font-mono text-neutral-400 hover:text-rose-400 transition-colors flex items-center gap-1"
             >
               <Trash2 className="w-2.5 h-2.5" />
               <span>Clear</span>
@@ -623,7 +623,7 @@ export function Shelf({
                     ? "Drop files to stash!"
                     : "Drag & Drop files or folders here"}
                 </span>
-                <span className="text-[10px] font-mono text-neutral-500">
+                <span className="text-[11px] font-mono text-neutral-500">
                   Quick multitasking staging area
                 </span>
               </div>
@@ -649,7 +649,7 @@ export function Shelf({
                       >
                         {file.name}
                       </span>
-                      <span className="text-[9px] font-mono text-neutral-500 truncate">
+                      <span className="text-[10px] font-mono text-neutral-500 truncate">
                         {file.path}
                       </span>
                     </div>
@@ -718,7 +718,7 @@ export function Shelf({
 
             <form onSubmit={handleAddShortcut} className="flex flex-col gap-2.5">
               <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-mono text-neutral-400">
+                <label className="text-[11px] font-mono text-neutral-400">
                   Shortcut Name
                 </label>
                 <input
@@ -733,7 +733,7 @@ export function Shelf({
               </div>
 
               <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-mono text-neutral-400">
+                <label className="text-[11px] font-mono text-neutral-400">
                   Target Path or URL
                 </label>
                 <input
@@ -747,7 +747,7 @@ export function Shelf({
               </div>
 
               <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-mono text-neutral-400">
+                <label className="text-[11px] font-mono text-neutral-400">
                   Type
                 </label>
                 <div className="grid grid-cols-4 gap-1">
@@ -756,7 +756,7 @@ export function Shelf({
                       key={t}
                       type="button"
                       onClick={() => setNewType(t)}
-                      className={`py-1 text-[10px] font-mono uppercase rounded border transition-colors ${
+                      className={`py-1 text-[11px] font-mono uppercase rounded border transition-colors ${
                         newType === t
                           ? "bg-sky-500/20 text-sky-300 border-sky-400/40"
                           : "bg-white/5 text-neutral-400 border-white/5 hover:text-white"

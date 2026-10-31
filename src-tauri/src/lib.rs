@@ -3,8 +3,10 @@ mod game_detector;
 mod hit_test;
 mod media;
 mod memory_manager;
+mod notification_listener;
 mod queue_server;
 mod system_monitor;
+mod volume_keys;
 mod window_helper;
 
 use std::collections::HashMap;
@@ -90,9 +92,11 @@ fn set_notch_size(
 #[tauri::command]
 fn update_notch_geometry(
     state: tauri::State<Arc<hit_test::HitTestState>>,
+    game_state: tauri::State<Arc<game_detector::GameDetectorState>>,
     is_expanded: bool,
     width: Option<f64>,
     height: Option<f64>,
+    natural_width: Option<f64>,
 ) {
     if let Ok(mut lock) = state.geometry.lock() {
         lock.is_expanded = is_expanded;
@@ -101,6 +105,13 @@ fn update_notch_geometry(
         }
         if let Some(h) = height {
             lock.height = h;
+        }
+    }
+    if let Some(nw) = natural_width {
+        if nw >= 120.0 {
+            game_state
+                .notch_base_width
+                .store(nw.round() as u32, Ordering::Relaxed);
         }
     }
 }
@@ -176,10 +187,43 @@ fn set_game_mode(state: tauri::State<Arc<game_detector::GameDetectorState>>, ena
 }
 
 #[tauri::command]
+fn set_smart_tab_avoidance(
+    state: tauri::State<Arc<game_detector::GameDetectorState>>,
+    enabled: bool,
+) {
+    state.smart_tab_enabled.store(enabled, Ordering::Relaxed);
+}
+
+#[tauri::command]
 fn open_settings(app: AppHandle) {
     if let Some(win) = app.get_webview_window("settings") {
+        // Collapse the notch first: an expanded overlay sits always-on-top over the settings
+        // window and swallows clicks in its transparent area.
+        let _ = app.emit_to("main", "settings-opened", ());
         let _ = win.show();
+        let _ = win.unminimize();
         let _ = win.set_focus();
+    }
+}
+
+#[tauri::command]
+fn drag_settings_window(app: AppHandle) {
+    if let Some(win) = app.get_webview_window("settings") {
+        let _ = win.start_dragging();
+    }
+}
+
+#[tauri::command]
+fn minimize_settings_window(app: AppHandle) {
+    if let Some(win) = app.get_webview_window("settings") {
+        let _ = win.minimize();
+    }
+}
+
+#[tauri::command]
+fn close_settings_window(app: AppHandle) {
+    if let Some(win) = app.get_webview_window("settings") {
+        let _ = win.hide();
     }
 }
 
@@ -314,6 +358,27 @@ fn set_autostart_status(enable: bool) -> Result<bool, String> {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn start_global_hotkey(app: AppHandle) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        RegisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY};
+
+    std::thread::spawn(move || unsafe {
+        // VK_N = 0x4E -> Ctrl+Alt+N toggles the Notch pill
+        if RegisterHotKey(None, 1, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 0x4E).is_err() {
+            return;
+        }
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            if msg.message == WM_HOTKEY {
+                let _ = app.emit("toggle-notch-shortcut", ());
+            }
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -363,21 +428,6 @@ pub fn run() {
                 }
             }
             if window.label() == "main" {
-                if let WindowEvent::Moved(pos) = event {
-                    if let Ok(Some(mon)) = window.current_monitor() {
-                        let mon_top = mon.position().y;
-                        if pos.y != mon_top {
-                            if let Some(main_win) = window.app_handle().get_webview_window("main") {
-                                window_helper::reposition_notch(
-                                    &main_win,
-                                    window_helper::NOTCH_CANVAS_WIDTH,
-                                    window_helper::NOTCH_CANVAS_HEIGHT,
-                                    None,
-                                );
-                            }
-                        }
-                    }
-                }
                 if let WindowEvent::ScaleFactorChanged { .. } = event {
                     let app_handle = window.app_handle().clone();
                     std::thread::spawn(move || {
@@ -437,12 +487,23 @@ pub fn run() {
             // Start system audio monitor (master volume & device changes)
             audio_manager::start_audio_monitor(app.handle().clone());
 
+            // Global hook that swallows hardware volume keys (hides the native
+            // Windows Volume OSD) and re-broadcasts them as `volume-key` events.
+            volume_keys::start_hook(app.handle().clone());
+
             // Initialize system monitor
             let sys_monitor = system_monitor::SystemMonitor::new();
             app.manage(sys_monitor);
 
             // Start memory trimmer to actively reduce unused WebView2 RAM
             memory_manager::start_memory_trimmer();
+
+            // Start zero-bloat Windows & Phone Link notification listener
+            notification_listener::start_notification_listener(app.handle().clone());
+
+            // Ctrl+Alt+N global shortcut to toggle the Notch
+            #[cfg(target_os = "windows")]
+            start_global_hotkey(app.handle().clone());
 
             Ok(())
         })
@@ -453,11 +514,15 @@ pub fn run() {
             update_notch_geometry,
             get_available_monitors,
             set_game_mode,
+            set_smart_tab_avoidance,
             get_media_track,
             media_toggle_play,
             media_next_track,
             media_prev_track,
             open_settings,
+            drag_settings_window,
+            minimize_settings_window,
+            close_settings_window,
             open_system_path,
             reveal_in_explorer,
             get_system_quick_paths,
@@ -469,7 +534,11 @@ pub fn run() {
             get_autostart_status,
             set_autostart_status,
             trim_memory,
-            spotify_queue_action
+            spotify_queue_action,
+            notification_listener::get_recent_notifications,
+            notification_listener::dismiss_notification,
+            notification_listener::clear_all_notifications,
+            notification_listener::trigger_test_notification
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

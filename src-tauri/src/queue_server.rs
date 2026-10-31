@@ -109,6 +109,31 @@ fn handle_client(stream: &mut TcpStream, app: AppHandle) {
         return;
     }
 
+    // Handle POST /lyrics
+    if request_str.starts_with("POST /lyrics") {
+        if let Some(pos) = request_str.find("\r\n\r\n") {
+            let start = pos + 4;
+            let end = if content_length > 0 && start + content_length <= request_str.len() {
+                start + content_length
+            } else {
+                request_str.len()
+            };
+            let body = &request_str[start..end];
+            if let Ok(json_data) = serde_json::from_str::<serde_json::Value>(body) {
+                let _ = app.emit("spotify-lyrics-update", json_data);
+            }
+        }
+        let response = "HTTP/1.1 200 OK\r\n\
+                        Access-Control-Allow-Origin: *\r\n\
+                        Access-Control-Allow-Private-Network: true\r\n\
+                        Content-Type: application/json\r\n\
+                        Content-Length: 15\r\n\r\n\
+                        {\"status\":\"ok\"}";
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+        return;
+    }
+
     // Handle POST /queue
     if request_str.starts_with("POST") {
         if let Some(pos) = request_str.find("\r\n\r\n") {

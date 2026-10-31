@@ -13,6 +13,7 @@ pub struct MediaTrackInfo {
     pub has_media: bool,
     pub position_sec: f64,
     pub duration_sec: f64,
+    pub source_app: String,
 }
 
 pub fn get_current_media_track() -> Result<MediaTrackInfo, Box<dyn std::error::Error>> {
@@ -64,6 +65,8 @@ pub fn get_current_media_track() -> Result<MediaTrackInfo, Box<dyn std::error::E
     let is_browser_error = title_lower.starts_with("hmmm") || title_lower.contains("can't reach this page") || title_lower.contains("refused to connect");
     let has_media = !title.is_empty() && !is_browser_error;
 
+    let source_app = session.SourceAppUserModelId().unwrap_or_default().to_string();
+
     Ok(MediaTrackInfo {
         title,
         artist,
@@ -72,6 +75,7 @@ pub fn get_current_media_track() -> Result<MediaTrackInfo, Box<dyn std::error::E
         has_media,
         position_sec,
         duration_sec,
+        source_app,
     })
 }
 

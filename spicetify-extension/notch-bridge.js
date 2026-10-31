@@ -89,12 +89,95 @@
     return items;
   }
 
+  let lastLyricsUri = "";
+
+  async function syncLyrics(trackUri) {
+    if (!trackUri || trackUri === lastLyricsUri) return;
+    if (!trackUri.includes(":track:")) return;
+
+    const trackId = trackUri.split(":").pop();
+    if (!trackId) return;
+
+    lastLyricsUri = trackUri;
+
+    try {
+      const currentItem = Spicetify.Player.data?.item || Spicetify.Player.origin?._state?.item;
+      const title = currentItem?.name || currentItem?.metadata?.title || "";
+      const artist = currentItem?.artists?.[0]?.name || currentItem?.metadata?.artist_name || "";
+
+      let lyricsData = null;
+
+      // 1. Spicetify CosmosAsync (Spotify Color Lyrics endpoint)
+      if (Spicetify.CosmosAsync?.get) {
+        try {
+          const res = await Spicetify.CosmosAsync.get(
+            `https://spclient.wg.spotify.com/color-lyrics/v2/track/${trackId}?format=json&vocalRemoval=false&market=from_token`
+          );
+          if (res?.lyrics?.lines?.length) {
+            lyricsData = res.lyrics;
+          }
+        } catch (_) {}
+      }
+
+      // 2. Platform PlayerAPI / LyricsAPI fallback
+      if (!lyricsData && Spicetify.Platform?.LyricsAPI?.getLyrics) {
+        try {
+          const res = await Spicetify.Platform.LyricsAPI.getLyrics(trackUri);
+          if (res?.lines?.length) {
+            lyricsData = res;
+          }
+        } catch (_) {}
+      }
+
+      if (!lyricsData || !Array.isArray(lyricsData.lines) || lyricsData.lines.length === 0) {
+        return;
+      }
+
+      const isSynced =
+        lyricsData.syncType === "LINE_SYNCED" ||
+        lyricsData.syncType === "SYLLABLE_SYNCED" ||
+        lyricsData.syncType === 1 ||
+        lyricsData.syncType === 2;
+
+      const lines = lyricsData.lines
+        .map((line) => {
+          const timeMs = Number(line.startTimeMs ?? line.time ?? 0);
+          return {
+            time: isSynced ? timeMs / 1000 : -1,
+            text: String(line.words || line.text || "").trim(),
+          };
+        })
+        .filter((line) => line.text && line.text !== "♪");
+
+      if (lines.length === 0) return;
+
+      console.log(`[Notch Bridge] Sending ${lines.length} lyrics lines for "${title}" to Notch`);
+      fetch("http://127.0.0.1:4545/lyrics", {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({
+          uri: trackUri,
+          title: title,
+          artist: artist,
+          synced: isSynced,
+          lines: lines,
+        }),
+      }).catch(() => {});
+    } catch (err) {
+      console.warn("[Notch Bridge] Error fetching lyrics:", err);
+    }
+  }
+
   async function sendQueue() {
     try {
       const q = Spicetify.Queue;
       const currentRev = q?.queueRevision || q?.revision || "";
       const currentTrack = Spicetify.Player.data?.item?.uri || Spicetify.Player.origin?._state?.item?.uri || "";
       
+      if (currentTrack && currentTrack !== lastLyricsUri) {
+        syncLyrics(currentTrack);
+      }
+
       const tracks = collectTracks();
       const revKey = `${currentRev}_${currentTrack}_${tracks.length}`;
 
@@ -177,9 +260,20 @@
 
   // Trigger on song change
   Spicetify.Player.addEventListener("songchange", () => {
+    lastRevKey = "";
+    const curUri = Spicetify.Player.data?.item?.uri || Spicetify.Player.origin?._state?.item?.uri || "";
+    if (curUri) {
+      syncLyrics(curUri);
+    }
     setTimeout(sendQueue, 300);
   });
 
   // Initial trigger
-  setTimeout(sendQueue, 1500);
+  setTimeout(() => {
+    const curUri = Spicetify.Player.data?.item?.uri || Spicetify.Player.origin?._state?.item?.uri || "";
+    if (curUri) {
+      syncLyrics(curUri);
+    }
+    sendQueue();
+  }, 1500);
 })();

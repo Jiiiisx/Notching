@@ -52,23 +52,17 @@ pub fn start_cursor_hit_test(
         loop {
             std::thread::sleep(Duration::from_millis(16)); // ~60 Hz
 
-            let (is_expanded, pill_w, pill_h) = {
+            let (pill_w, pill_h) = {
                 if let Ok(lock) = state.geometry.lock() {
-                    (lock.is_expanded, lock.width, lock.height)
+                    (lock.width, lock.height)
                 } else {
-                    (false, 210.0, 36.0)
+                    (210.0, 36.0)
                 }
             };
 
-            // If notch is expanded, whole window area must be interactive
-            if is_expanded {
-                if last_ignoring {
-                    let _ = window.set_ignore_cursor_events(false);
-                    last_ignoring = false;
-                    state.is_ignoring_cursor.store(false, Ordering::Relaxed);
-                }
-                continue;
-            }
+            // NOTE: the interactive region is always the pill/panel rect, expanded or not. Making the
+            // whole window interactive while expanded turned its transparent area into an invisible
+            // click-blocking layer over whatever sits behind (e.g. the settings window).
 
             let Ok(hwnd) = window.hwnd() else { continue };
             let hwnd_val = HWND(hwnd.0 as _);
