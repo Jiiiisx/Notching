@@ -44,12 +44,13 @@ unsafe extern "system" fn low_level_keyboard_proc(
             VK_VOLUME_UP => (WM_APP_VOL_UP, HOOK_PUMP_TID.load(Ordering::Acquire)),
             VK_VOLUME_DOWN => (WM_APP_VOL_DOWN, HOOK_PUMP_TID.load(Ordering::Acquire)),
             VK_VOLUME_MUTE => (WM_APP_VOL_MUTE, HOOK_PUMP_TID.load(Ordering::Acquire)),
-            _ => (0, 0),
+            // Bukan tombol volume: teruskan apa adanya ke Windows (larang menelan!)
+            _ => return CallNextHookEx(None, code, wparam, lparam),
         };
         if tid != 0 {
             PostThreadMessageW(tid, msg, WPARAM(0), LPARAM(0));
         }
-        return LRESULT(1); // swallow: the OS (and its OSD) never sees the key
+        return LRESULT(1); // swallow HANYA tombol volume: OSD Windows tidak muncul
     }
     CallNextHookEx(None, code, wparam, lparam)
 }}
