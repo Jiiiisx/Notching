@@ -96,3 +96,8 @@ html, body, #root {
     animation: none !important;
   }
 }
+
+/* Cegah scroll chaining: wheel di dropdown/panel tidak merembet ke area di belakangnya */
+* {
+  overscroll-behavior: contain;
+}

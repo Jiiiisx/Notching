@@ -106,6 +106,41 @@ function loadHistory(): AgentMessage[] {
   }
 }
 
+// Skill loader: file .md lokal di %LOCALAPPDATA%\Notch\skills\<nama>.md.
+// Front-matter `keywords: foo, bar` dipakai untuk auto-matching; kalau pesan
+// user mengandung salah satu keyword, isi skill disuntik ke system prompt.
+// Bisa juga dipaksa: pesan diawali "/skill nama".
+interface SkillInfo {
+  name: string;
+  keywords: string[];
+}
+
+function parseSkillMeta(text: string): SkillInfo {
+  const m = text.match(/^keywords:\s*(.+)/m);
+  const keywords = m
+    ? m[1].split(",").map((k) => k.trim().toLowerCase()).filter(Boolean)
+    : [];
+  return { name: "", keywords };
+}
+
+function skillBody(text: string): string {
+  // buang front-matter sederhana (blok --- sampai ---) kalau ada
+  return text.replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
+}
+
+async function loadSkills(): Promise<{ names: string[]; files: Record<string, string> }> {
+  const names = await invoke<string[]>("agent_list_skills");
+  const files: Record<string, string> = {};
+  for (const n of names) {
+    try {
+      files[n] = await invoke<string>("agent_read_skill", { name: n });
+    } catch {
+      // file hilang/terkunci: skip, jangan bunuh panel
+    }
+  }
+  return { names, files };
+}
+
 // ponytail: history unbounded in storage but only last 20 go to the API —
 // upgrade path: trim store to last 200.
 export default function AgentPanel({
@@ -123,8 +158,18 @@ export default function AgentPanel({
     { name: string; ok: boolean; detail: string }[]
   >([]);
   const [error, setError] = useState<string | null>(null);
+  const [skillNames, setSkillNames] = useState<string[]>([]);
+  const skillFilesRef = useRef<Record<string, string>>({});
+  const [activeSkill, setActiveSkill] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    loadSkills().then(({ names, files }) => {
+      setSkillNames(names);
+      skillFilesRef.current = files;
+    });
+  }, []);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -143,7 +188,8 @@ export default function AgentPanel({
 
   const callModel = async (
     controller: AbortController,
-    convo: { role: string; content: string }[]
+    convo: { role: string; content: string }[],
+    systemContent: string
   ) => {
     const url = `${config.baseUrl.replace(/\/+$/, "")}/chat/completions`;
     const res = await fetch(url, {
@@ -157,7 +203,7 @@ export default function AgentPanel({
         model: config.model,
         stream: false, // ponytail: tool loop needs whole JSON; streaming+tools needs delta.tool_calls parsing. Upgrade path: add SSE tool_call parsing when wanted.
         messages: [
-          { role: "system", content: config.systemPrompt },
+          { role: "system", content: systemContent },
           ...convo.slice(-MAX_CONTEXT_MESSAGES),
         ],
         tools: TOOLS,
@@ -201,7 +247,34 @@ export default function AgentPanel({
       return;
     }
     setError(null);
+    // Skill: "/skill nama ..." memaksa satu skill; tanpa itu, keyword auto-match.
+    const slash = text.match(/^\/skill\s+([^\s]+)/);
+    const lower = text.toLowerCase();
+    let skillName: string | null = null;
+    let systemContent = config.systemPrompt;
+    if (slash) {
+      skillName = skillNames.find((n) => n.toLowerCase() === slash[1].toLowerCase()) ?? null;
+      if (!skillName) {
+        setError(`Skill "${slash[1]}" tidak ditemukan. Ada: ${skillNames.join(", ") || "belum ada"}`);
+        return;
+      }
+    } else {
+      skillName =
+        skillNames.find((n) =>
+          (parseSkillMeta(skillFilesRef.current[n] ?? "").keywords ?? []).some(
+            (k) => k && lower.includes(k)
+          )
+        ) ?? null;
+    }
+    if (skillName) {
+      const body = skillBody(skillFilesRef.current[skillName] ?? "");
+      systemContent =
+        `${config.systemPrompt}\n\n--- SKILL DIAKTIFKAN: ${skillName} ---\n` +
+        body +
+        `\n--- GUNAKAN pengetahuan skill ini untuk menjawab (jangan sebut "skill" atau "injeksi") ---`;
+    }
     setInput("");
+    setActiveSkill(skillName);
     const userMsg: AgentMessage = { role: "user", content: text };
     const history = [...messages, userMsg];
     setMessages(history);
@@ -219,7 +292,7 @@ export default function AgentPanel({
         ...history.map((m) => ({ role: m.role as string, content: m.content })),
       ];
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-        const json = await callModel(controller, convo);
+        const json = await callModel(controller, convo, systemContent);
         const msg = json.choices?.[0]?.message;
         if (!msg) throw new Error("Respons model kosong");
         const toolCalls = msg.tool_calls ?? [];
@@ -285,6 +358,7 @@ export default function AgentPanel({
       <div className="flex items-center justify-between">
         <div className="text-[11px] font-semibold uppercase tracking-wider text-white/50">
           Agent · {config.model || "not configured"}
+          {activeSkill && <span style={{ color: accentColor }}> · skill: {activeSkill}</span>}
         </div>
         <button
           onClick={clear}

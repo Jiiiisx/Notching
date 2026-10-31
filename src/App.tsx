@@ -2591,7 +2591,9 @@ export default function App() {
                                   <span className="truncate">{m.label}</span>
                                 </button>
                               ))}
-                              <div className="h-px bg-white/10 my-1" />
+                              <div className="px-2 pt-1 pb-0.5 text-[10px] font-mono uppercase tracking-wider text-neutral-500">
+                                Utilitas
+                              </div>
                             </>
                           )}
 

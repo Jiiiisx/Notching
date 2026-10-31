@@ -89,6 +89,53 @@ fn set_notch_size(
     }
 }
 
+fn agent_skills_dir() -> std::path::PathBuf {
+    std::env::var("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default()
+        .join("Notch")
+        .join("skills")
+}
+
+#[tauri::command]
+fn agent_list_skills() -> Vec<String> {
+    match std::fs::read_dir(agent_skills_dir()) {
+        Ok(rd) => rd
+            .flatten()
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .is_some_and(|x| x == "md")
+            })
+            .filter_map(|e| {
+                e.path()
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+#[tauri::command]
+fn agent_read_skill(name: String) -> Result<String, String> {
+    let dir = agent_skills_dir();
+    // no traversal: nama tidak boleh keluar dari folder skills
+    if name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.trim().is_empty()
+    {
+        return Err("Nama skill tidak valid".into());
+    }
+    let path = agent_read_skill_inner(dir.join(format!("{}.md", name)))?;
+    Ok(path)
+}
+
+fn agent_read_skill_inner(path: std::path::PathBuf) -> Result<String, String> {
+    std::fs::read_to_string(path).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn agent_run_tool(
     app: AppHandle,
@@ -582,6 +629,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_notch_config,
             agent_run_tool,
+            agent_list_skills,
+            agent_read_skill,
             set_notch_state,
             set_notch_size,
             update_notch_geometry,
