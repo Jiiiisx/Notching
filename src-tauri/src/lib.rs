@@ -173,9 +173,8 @@ fn agent_memory_append(line: String) -> Result<String, String> {
 }
 
 /// Cari app terpasang berdasarkan nama lewat shortcut Start Menu & Desktop
-/// (.lnk). Kalau tidak ada, agent diminta bertanya ke user (bukan langsung
-/// buka browser).
-fn find_app(name: &str) -> Result<String, String> {
+/// (.lnk). Return daftar .lnk; kosong dianggap tidak ketemu.
+fn find_app(name: &str) -> Result<Vec<String>, String> {
     let needle = name.to_lowercase();
     if needle.is_empty() {
         return Err("Nama app kosong".into());
@@ -216,16 +215,12 @@ fn find_app(name: &str) -> Result<String, String> {
             }
         }
     }
-    match hits.len() {
-        0 => Err(format!(
+    if hits.is_empty() {
+        return Err(format!(
             "App \"{name}\" tidak ditemukan di Start Menu/Desktop laptop ini. Tanyakan ke user: mau dibuka lewat browser atau tidak. Jangan buka apa pun sebelum user menjawab."
-        )),
-        1 => Ok(hits[0].clone()),
-        _ => Ok(format!(
-            "Banyak match, buka yang pertama atau tanya user jika ragu:\n{}",
-            hits.join("\n")
-        )),
+        ));
     }
+    Ok(hits)
 }
 
 fn agent_read_skill_inner(path: std::path::PathBuf) -> Result<String, String> {
@@ -402,11 +397,19 @@ fn agent_run_tool(
                 .get("name")
                 .and_then(|v| v.as_str())
                 .ok_or("name wajib diisi")?;
-            let path = find_app(name)?;
+            let hits = find_app(name)?;
+            if hits.len() > 1 {
+                // Jangan buka apa pun: biar model tanya user (nama app
+                // ambigu, mis. "Spotify" kena Spotify + Spotify Labs).
+                return Ok(format!(
+                    "Ada {} app bernama mirip \"{}\", jangan buka dulu — tanya user mau yang mana, atau minta nama lebih spesifik:\n{}",
+                    hits.len(), name, hits.join("\n")
+                ));
+            }
             app.opener()
-                .open_path(&path, None::<&str>)
+                .open_path(&hits[0], None::<&str>)
                 .map_err(|e| e.to_string())?;
-            Ok(format!("Dibuka app: {path}"))
+            Ok(format!("Dibuka app: {}", hits[0]))
         }
         "memory" => agent_memory_append(
             args.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string(),
