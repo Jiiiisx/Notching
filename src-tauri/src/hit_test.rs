@@ -5,10 +5,11 @@ use tauri::{AppHandle, Emitter, WebviewWindow};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, GetCursorPos, GetWindowRect, MSG, MSLLHOOKSTRUCT,
-    PostMessageW, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WH_MOUSE_LL,
-    WM_MOUSEHWHEEL, WM_MOUSEWHEEL,
+    CallNextHookEx, DispatchMessageW, FindWindowExW, GetMessageW, GetCursorPos, GetWindowRect, MSG,
+    MSLLHOOKSTRUCT, PostMessageW, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
+    WH_MOUSE_LL, WM_MOUSEHWHEEL, WM_MOUSEWHEEL,
 };
+use windows::core::{w, PCWSTR};
 
 #[derive(Debug, Clone)]
 pub struct PillGeometry {
@@ -96,16 +97,29 @@ unsafe extern "system" fn wheel_hook_proc(
                     if wheel_point_inside_notch(pt, state) {
                         let hwnd_v = NOTCH_HWND.load(Ordering::Relaxed);
                         if hwnd_v != 0 {
-                            // Re-post the wheel straight into the notch webview:
-                            // WM_MOUSEWHEEL wparam = MARKWPARAM(flags, delta),
-                            // lparam = MAKELPARAM(x, y). Swallow the original so
-                            // the window under the cursor (browser behind) never
-                            // scrolls while the pointer is over the notch.
+                            let hwnd = HWND(hwnd_v as isize as *mut _);
+                            // Re-post the wheel into the notch webview:
+                            // wparam = MAKEWPARAM(flags=0, delta), lparam = MAKELPARAM(x, y).
                             let delta = ((m.mouseData >> 16) & 0xFFFF) as isize;
                             let wp = WPARAM((delta << 16) as usize);
                             let lp = LPARAM(((pt.1 as isize) << 16) | (pt.0 as isize & 0xFFFF));
-                            let hwnd = HWND(hwnd_v as isize as *mut _);
-                            let _ = PostMessageW(Some(hwnd), msg, wp, lp);
+                            // Target: host WebView2 child (Chrome_WidgetWin_1).
+                            // The top-level notch window menforward wheel tidak
+                            // reliable — WebView2 memproses WM_MOUSEWHEEL di
+                            // child-nya sendiri. Koordinat tetap screen coords.
+                            let target = FindWindowExW(
+                                Some(hwnd),
+                                None,
+                                PCWSTR(w!("Chrome_WidgetWin_1").as_ptr()),
+                                None,
+                            )
+                            .unwrap_or(hwnd);
+                            let _ = PostMessageW(
+                                Some(target),
+                                msg,
+                                wp,
+                                lp,
+                            );
                             return LRESULT(1);
                         }
                     }
