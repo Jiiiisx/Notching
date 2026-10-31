@@ -314,8 +314,25 @@ export default function AgentPanel({
     } catch {
       memory = "";
     }
-    let systemContent =
+  const cleanOut = (t: string) =>
+    t
+      // Buang sisa markup function-call model (</invoke>, <function_call>, dll)
+      .replace(/<\/?(?:function_call|invoke|parameter|antml:[a-z-]+)[^>]*>/g, "")
+      .replace(/[ \t]+\n/g, "\n")
+      .trim()
+      .replace(/^(?:```xml|```)\n?/, "");
+  const agentPersona =
+    `\n\n--- KARAKTER (wajib dipatuhi) ---\n` +
+    `Bicara seperti teman dekat orang Indonesia: bahasa santai (makasih, gaskeun, wkwk boleh, tapi jangan berlebihan), enggak formal, enggak seperti robot/CS.\n` +
+    `JANGAN tampilkan kode, tag XML, JSON, nama tool, atau markup (<invoke>, </parameter>, <function_call>) di jawaban. Hasil tool tampilkan sebagai kalimat biasa: "Spotify udah kubuka, lagunya jalan." Fungsi pencarian/tool kerjakan di belakang.\n` +
+    `Jawaban pendek dan manusiawi. Kasih opini atau reaksi ringan, tanya balik kalau perlu. Jangan mulai dengan "Tentu!", "Baik,", atau kalimat asisten. Jendela percakapan: user mau tempat bercerita juga, bukan cuma minta komando.\n` +
+    `Boleh pakai sedikit emoji yang relevan kalau konteksnya musik/kegiatan; enggak wajib.\n` +
+    `Contoh gaya jawaban:\n` +
+    `- "Dah kebuka tuh di Spotify, cari 2001x Ada Khalif. Tinggal tap lagunya biar mulai." ` +
+    `- "Ada dua, Spotify mana yang kamu maksud? Yang biasa atau Spotify Studio Labs?"\n`;
+  let systemContent =
       config.systemPrompt +
+      agentPersona +
       `\n\n--- PERILAKU LOKAL (wajib) ---\n` +
       `1. Jika user meminta membuka sebuah aplikasi/layanan di laptop (Gemini, Hermes, Spotify, VS Code, dsb): PANGGIL open_app PADA PERMUTAMA. Kalau open_app gagal (tidak terpasang), TANYAKAN DULU: "Tidak ketemu di laptop, mau dibuka lewat browser?" dan tunggu jawaban sebelum open_url.\n` +
       `2. Untuk perintah musik Spotify ('setel/play lagu X'): open_url dengan url \`https://open.spotify.com/search/<judul lagu plus artis>\` — ini OTOMATIS dibuka di aplikasi Spotify desktop di halaman pencarian lagu itu (dipilih user untuk play). Kalau ada link open.spotify.com/track/... dari user, pakai link itu.\n` +
@@ -370,7 +387,7 @@ export default function AgentPanel({
         if (toolCalls.length === 0) {
           const finalMsg: AgentMessage = {
             role: "assistant",
-            content: msg.content ?? "",
+            content: cleanOut(msg.content ?? ""),
           };
           const withAnswer = [...history, finalMsg];
           setMessages(withAnswer);
@@ -379,7 +396,7 @@ export default function AgentPanel({
         }
         if (msg.content) {
           // progressive assistant text between tool rounds
-          const withText = [...history, { role: "assistant", content: msg.content } as AgentMessage];
+          const withText = [...history, { role: "assistant", content: cleanOut(msg.content) } as AgentMessage];
           setMessages(withText);
         }
         setToolNote(`Menjalankan ${toolCalls.map((c) => c.function.name).join(", ")}…`);
