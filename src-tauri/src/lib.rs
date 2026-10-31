@@ -402,7 +402,7 @@ fn agent_run_tool(
                 // Jangan buka apa pun: biar model tanya user (nama app
                 // ambigu, mis. "Spotify" kena Spotify + Spotify Labs).
                 return Ok(format!(
-                    "Ada {} app bernama mirip \"{}\", jangan buka dulu — tanya user mau yang mana, atau minta nama lebih spesifik:\n{}",
+                    "Ada {} app bernama mirip \"{}\". JANGAN buka dulu. Jawab user dengan daftar pilihannya (nama app saja, satu per baris, tanpa path), lalu tunggu user memilih:\n{}",
                     hits.len(), name, hits.join("\n")
                 ));
             }
