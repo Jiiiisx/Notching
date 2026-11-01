@@ -334,6 +334,19 @@ fn is_tab_behind_notch(
         cache.last_half_width = notch_half_width_phys;
         cache.ticks_since_query = 0;
 
+        // Heuristic fail-open: Chromium only maintains UIA tab metadata while a11y is active and
+        // can report zero TabItems right after the browser opens/restyles. A maximized/very wide
+        // browser covering the centered pill always has its tab strip behind it, so compact
+        // without waiting for UIA - the precise TabItem check below still handles small windows.
+        let mut browser_rect = RECT::default();
+        if GetWindowRect(browser_hwnd, &mut browser_rect).is_ok()
+            && browser_rect.right - browser_rect.left
+                >= ((mi.rcMonitor.right - mi.rcMonitor.left) as f64 * 0.75).round() as i32
+        {
+            cache.last_result = true;
+            return true;
+        }
+
         let var_tab_item = VARIANT::from(UIA_TabItemControlTypeId.0 as i32);
         let Ok(cond_tab_item) = auto.CreatePropertyCondition(UIA_ControlTypePropertyId, &var_tab_item) else {
             return cache.last_result;
