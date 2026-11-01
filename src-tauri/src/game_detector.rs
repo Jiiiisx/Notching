@@ -319,7 +319,8 @@ fn is_tab_behind_notch(
         let title_hash = get_window_title_hash(browser_hwnd);
         let hwnd_key = browser_hwnd.0 as isize;
 
-        if cache.last_hwnd == Some(hwnd_key)
+        if cache.last_result
+            && cache.last_hwnd == Some(hwnd_key)
             && cache.last_title_hash == title_hash
             && cache.last_half_width == notch_half_width_phys
             && !cursor_near_top
@@ -333,19 +334,6 @@ fn is_tab_behind_notch(
         cache.last_title_hash = title_hash;
         cache.last_half_width = notch_half_width_phys;
         cache.ticks_since_query = 0;
-
-        // Heuristic fail-open: Chromium only maintains UIA tab metadata while a11y is active and
-        // can report zero TabItems right after the browser opens/restyles. A maximized/very wide
-        // browser covering the centered pill always has its tab strip behind it, so compact
-        // without waiting for UIA - the precise TabItem check below still handles small windows.
-        let mut browser_rect = RECT::default();
-        if GetWindowRect(browser_hwnd, &mut browser_rect).is_ok()
-            && browser_rect.right - browser_rect.left
-                >= ((mi.rcMonitor.right - mi.rcMonitor.left) as f64 * 0.75).round() as i32
-        {
-            cache.last_result = true;
-            return true;
-        }
 
         let var_tab_item = VARIANT::from(UIA_TabItemControlTypeId.0 as i32);
         let Ok(cond_tab_item) = auto.CreatePropertyCondition(UIA_ControlTypePropertyId, &var_tab_item) else {
@@ -388,6 +376,13 @@ fn is_tab_behind_notch(
                                                     }
                                                 }
                                             }
+                                        } else if strip_rect.right >= notch_left
+                                            && strip_rect.left <= notch_right
+                                        {
+                                            // TabItems not exposed (Chromium a11y flaky) but the strip
+                                            // itself crosses the notch zone horizontally -> tabs behind.
+                                            found_overlap = true;
+                                            break;
                                         } else if let Ok(desc_items) =
                                             strip_el.FindAll(TreeScope_Descendants, &cond_tab_item)
                                         {
