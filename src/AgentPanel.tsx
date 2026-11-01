@@ -78,7 +78,7 @@ const TOOLS = [
     function: {
       name: "open_app",
       description:
-        "Buka aplikasi yang terpasang di laptop user (dicari dari shortcut Start Menu & Desktop). PANGGIL INI DULU sebelum open_url kalau user minta membuka sebuah aplikasi/layanan (Gemini, Hermes, Spotify, dsb). Kalau gagal (tidak ada di laptop), bertanya dulu ke user: mau dibuka lewat browser atau tidak.",
+        "Buka aplikasi yang terpasang ATAU folder/file di laptop: dari shortcut Start Menu & Desktop (mis. 'spotify'), atau nama/path folder-file di disk (mis. 'Dasar Pemrograman' atau 'D:\\Semester 1' → dibuka di File Explorer). PANGGIL INI untuk semua permintaan 'buka X di laptop'. Banyak hasil cocok → tanya user dulu; tidak ketemu → tanya user mau dibuka via browser atau tidak.",
       parameters: {
         type: "object",
         properties: { name: { type: "string", description: "Nama app, mis. 'spotify' atau 'gemini'" } },
@@ -386,7 +386,7 @@ async function sendAgent(
       `2. Untuk perintah musik Spotify ('setel/play lagu X'): open_url dengan url \`https://open.spotify.com/search/<judul lagu plus artis>\` — ini OTOMATIS dibuka di aplikasi Spotify desktop di halaman pencarian lagu itu (dipilih user untuk play). Kalau ada link open.spotify.com/track/... dari user, pakai link itu.\n` +
       `3. Untuk mencari/buka di web (search, situs, video, artikel, link): langsung open_search/open_url tanpa bertanya. Untuk MEMBUKA APLIKASI desktop (Gemini, Hermes, VS Code, dsb), open_app dulu. Jika tidak terpasang, bertanya dulu sebelum open_url.\n` +
       `4. Kamu MEMORI: fakta permanen user & laptop di bawah. Gunakan sebelum bertanya ulang hal yang sudah diketahui. Pelajari terus user & laptop: setiap kali menemukan fakta penting baru (preferensi, folder penting, app terpasang, kebiasaan), panggil tool memory.\n` +
-      `5. USER MINTA BUKA FILE ATAU FOLDER DI LAPTOP: find_file dulu untuk temukan path-nya, lalu open_file dengan SALAH SATU path hasilnya — jangan cuma menceritakan hasil pencarian. FOLDER dibuka open_file juga (kebuka di File Explorer).\n` +
+      `5. USER MINTA BUKA FILE ATAU FOLDER DI LAPTOP: LANGSUNG panggil open_app dengan nama foldernya (contoh: permintaan "buka folder Dasar Pemrograman" → open_app "Dasar Pemrograman"; kalau user kasih path "D:\Semester 1" → open_app "D:\Semester 1"). open_app menangani folder/file juga — JANGAN berhenti di find_file dan jangan cuma bercerita hasil pencarian.\n` +
       `--- MEMORI AGENT ---\n${memory || "(masih kosong)"}`;
   if (skillName) {
     const body = skillBody(store.skillFiles[skillName] ?? "");
@@ -471,7 +471,7 @@ async function sendAgent(
       convo.push({
         role: "user",
         content:
-          "Sekarang jawab user: rangkum hasil di atas dalam 1-2 kalimat santai (bahasa Indonesia, gaya teman), TANPA kode/tag markup/nama tool. Jangan jawab kosong.",
+          "Periksa dulu: apakah permintaan user sudah SELESAI dijalankan? Kalau belum (mis. setelah find_file masih perlu open_file, atau harus lanjut langkah berikutnya), LANGSUNG panggil tool berikutnya sekarang — jangan mengaku 'sudah kubuka' kalau belum dieksekusi. Kalau sudah selesai, jawab user: rangkum hasil dalam 1-2 kalimat santai (bahasa Indonesia, gaya teman), TANPA kode/tag markup/nama tool. Jangan jawab kosong.",
       });
       setStore({ toolNote: null });
     }

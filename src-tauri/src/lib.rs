@@ -252,7 +252,12 @@ fn agent_read_skill_inner(path: std::path::PathBuf) -> Result<String, String> {
 /// Cari file/dfolder berdasarkan nama (case-insensitive substring) di folder
 /// umum user, atau di `dir` kalau diberikan. Hard cap supaya tidak menggantung
 /// selamanya di drive besar.
-fn find_files(query: &str, dir: Option<&str>) -> Result<String, String> {
+/// Cari file/folder → daftar (path, is_folder). Path folder diakhiri "\".
+/// truncate=true kalau berhenti karena cap scan/hit.
+fn find_hits(
+    query: &str,
+    dir: Option<&str>,
+) -> Result<(Vec<(String, bool)>, bool), String> {
     use std::sync::atomic::{AtomicU32, Ordering};
     const MAX_SCAN: u32 = 30_000;
     const MAX_HITS: usize = 30;
@@ -273,15 +278,18 @@ fn find_files(query: &str, dir: Option<&str>) -> Result<String, String> {
     // kalau user butuh cari di SteamLibrary/node_modules, lewat argumen `dir`.
     const SKIP: [&str; 6] = ["node_modules", ".git", "$RECYCLE.BIN", "System Volume Information", "steamapps", "AppData"];
     let scanned = AtomicU32::new(0);
-    let mut hits: Vec<String> = Vec::new();
+    let mut hits: Vec<(String, bool)> = Vec::new();
     let mut stack = roots;
+    let mut truncated = false;
     while let Some(d) = stack.pop() {
         if scanned.load(Ordering::Relaxed) >= MAX_SCAN || hits.len() >= MAX_HITS {
+            truncated = true;
             break;
         }
         let Ok(read) = std::fs::read_dir(&d) else { continue };
         for entry in read.flatten() {
             if scanned.fetch_add(1, Ordering::Relaxed) >= MAX_SCAN {
+                truncated = true;
                 break;
             }
             let name = entry.file_name().to_string_lossy().into_owned();
@@ -290,11 +298,13 @@ fn find_files(query: &str, dir: Option<&str>) -> Result<String, String> {
                 // Folder diberi trailing "\" supaya model tahu ini folder
                 // (open_file path folder → File Explorer).
                 let mut s = p.to_string_lossy().into_owned();
-                if p.is_dir() {
+                let is_dir = p.is_dir();
+                if is_dir {
                     s.push('\\');
                 }
-                hits.push(s);
+                hits.push((s, is_dir));
                 if hits.len() >= MAX_HITS {
+                    truncated = true;
                     break;
                 }
             }
@@ -303,11 +313,16 @@ fn find_files(query: &str, dir: Option<&str>) -> Result<String, String> {
             }
         }
     }
+    Ok((hits, truncated))
+}
+
+fn find_files(query: &str, dir: Option<&str>) -> Result<String, String> {
+    let (hits, truncated) = find_hits(query, dir)?;
     if hits.is_empty() {
         return Ok(format!("Tidak ada hasil untuk \"{query}\""));
     }
-    let mut out = hits.join("\n");
-    if hits.len() >= MAX_HITS || scanned.load(Ordering::Relaxed) >= MAX_SCAN {
+    let mut out = hits.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>().join("\n");
+    if truncated {
         out.push_str("\n(berhenti lebih awal — percisikan query atau set arg `dir`)");
     }
     Ok(out)
@@ -427,7 +442,6 @@ fn agent_run_tool(
             Ok(format!("Dibuka: {}", p.display()))
         }
         "open_app" => {
-            use tauri_plugin_opener::OpenerExt;
             let name = args
                 .get("name")
                 .and_then(|v| v.as_str())
@@ -441,7 +455,34 @@ fn agent_run_tool(
                 open_shortcut(&dir_str)?;
                 return Ok(format!("Folder dibuka di File Explorer: {dir_str}"));
             }
-            let hits = find_app(name)?;
+            let hits = match find_app(name) {
+                Ok(h) => h,
+                Err(_) => {
+                    // Bukan shortcut app: cari folder/file dengan nama itu
+                    // di folder umum + D:\ (tanpa bergantung model memanggil
+                    // find_file→open_file: model sering berhenti/berbohong).
+                    let (hits, truncated) = find_hits(&name.to_lowercase(), None)?;
+                    if hits.is_empty() {
+                        return Err(format!(
+                            "App/folder \"{name}\" tidak ditemukan di laptop ini. Tanyakan ke user: mau dibuka lewat browser atau tidak. Jangan buka apa pun sebelum user menjawab."
+                        ));
+                    }
+                    if hits.len() > 1 || truncated {
+                        return Ok(format!(
+                            "Ada {} file/folder bernama mirip \"{}\". JANGAN buka dulu. Jawab user dengan daftar pilihannya (nama saja, satu per baris, tanpa path), lalu tunggu user memilih:\n{}",
+                            hits.len(), name, hits.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>().join("\n")
+                        ));
+                    }
+                    let (path, is_dir) = &hits[0];
+                    let clean = path.trim_end_matches('\\');
+                    open_shortcut(clean)?;
+                    return Ok(if *is_dir {
+                        format!("Folder dibuka di File Explorer: {clean}")
+                    } else {
+                        format!("Dibuka file: {clean}")
+                    });
+                }
+            };
             if hits.len() > 1 {
                 // Jangan buka apa pun: biar model tanya user (nama app
                 // ambigu, mis. "Spotify" kena Spotify + Spotify Labs).
