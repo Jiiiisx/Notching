@@ -26,7 +26,7 @@ export interface AgentMessage {
 
 const HISTORY_KEY = "notch_agent_history";
 const MAX_CONTEXT_MESSAGES = 20; // keep payload slim: send last N messages
-const MAX_TOOL_ROUNDS = 4; // hard cap: model cannot loop tools forever
+const MAX_TOOL_ROUNDS = 8; // agent punya 16 tool; 4 tidak cukup utk rantai read→write dll
 
 // ponytail: tool schema duplicated in src-tauri/src/lib.rs agent_run_tool —
 // upgrade path: generate this list from a Rust command to keep one source.
@@ -83,6 +83,62 @@ const TOOLS = [
         type: "object",
         properties: { name: { type: "string", description: "Nama app, mis. 'spotify' atau 'gemini'" } },
         required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_file",
+      description:
+        "Baca ISI file teks sampai 6000 karakter awal (kode .js/.ts/.py/.c, .md, .txt, .csv). Untuk permintaan ringkas/jelaskan/kerjakan isi file tugas. File biner (docx/gambar) ditolak.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string", description: "Path absolut, hasil find_file/path user" } },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_file",
+      description:
+        "Buat file baru / tulis isi (path absolut). Menimpa file yang SUDAH ADA butuh overwrite=true — konfirmasi user dulu; jangan pernah timpa diam-diam. Dilarang menulis ke folder sistem Windows.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Path absolut, mis. D:\\Semester 1\\jawaban.md" },
+          content: { type: "string", description: "Isi file lengkap" },
+          overwrite: { type: "boolean", description: "Hanya true kalau user sudah setuju menimpa" },
+        },
+        required: ["path", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_dir",
+      description:
+        "Tampilkan isi folder: daftar file (ukurannya) dan subfolder (diakhiri '\\') sampai 150 entri.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string", description: "Path absolut folder" } },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_web",
+      description:
+        "Cari di web (DuckDuckGo): kembalikan judul, cuplikan, dan URL hasil teratas. Untuk pertanyaan butuh info internet (berita, error, tutorial, harga). Jawab user dari hasilnya dengan menyebut sumber singkat.",
+      parameters: {
+        type: "object",
+        properties: { query: { type: "string", description: "Kata kunci pencarian" } },
+        required: ["query"],
       },
     },
   },
@@ -369,6 +425,21 @@ async function sendAgent(
     memory = "";
   }
 
+  // Konteks layar: judul window yang user lihat sekarang → agent paham
+  // permintaan seperti "kerjakan tugasnya yang tadi" tanpa path eksplisit.
+  let screen = "";
+  try {
+    const wins = await invoke<string[]>("list_windows");
+    if (wins?.length) {
+      screen =
+        `\n\n--- KONTEKS LAYAR (window yang terlihat di depan user saat ini, urutan ≈ dari paling depan) ---\n` +
+        `${wins.join("\n")}\n` +
+        `Gunakan untuk merujuk "yang lagi kebuka di layar"; jangan tebak path dari judul — pakai find_file/list_dir bila butuh.`;
+    }
+  } catch {
+    /* tanpa konteks layar, tidak fatal */
+  }
+
   const agentPersona =
     `\n\n--- KARAKTER (wajib dipatuhi) ---\n` +
     `Bicara seperti teman dekat orang Indonesia: bahasa santai (makasih, gaskeun, wkwk boleh, tapi jangan berlebihan), enggak formal, enggak seperti robot/CS.\n` +
@@ -386,7 +457,10 @@ async function sendAgent(
       `2. Untuk perintah musik Spotify ('setel/play lagu X'): open_url dengan url \`https://open.spotify.com/search/<judul lagu plus artis>\` — ini OTOMATIS dibuka di aplikasi Spotify desktop di halaman pencarian lagu itu (dipilih user untuk play). Kalau ada link open.spotify.com/track/... dari user, pakai link itu.\n` +
       `3. Untuk mencari/buka di web (search, situs, video, artikel, link): langsung open_search/open_url tanpa bertanya. Untuk MEMBUKA APLIKASI desktop (Gemini, Hermes, VS Code, dsb), open_app dulu. Jika tidak terpasang, bertanya dulu sebelum open_url.\n` +
       `4. Kamu MEMORI: fakta permanen user & laptop di bawah. Gunakan sebelum bertanya ulang hal yang sudah diketahui. Pelajari terus user & laptop: setiap kali menemukan fakta penting baru (preferensi, folder penting, app terpasang, kebiasaan), panggil tool memory.\n` +
-      `5. USER MINTA BUKA FILE ATAU FOLDER DI LAPTOP: LANGSUNG panggil open_app dengan nama foldernya (contoh: permintaan "buka folder Dasar Pemrograman" → open_app "Dasar Pemrograman"; kalau user kasih path "D:\Semester 1" → open_app "D:\Semester 1"). open_app menangani folder/file juga — JANGAN berhenti di find_file dan jangan cuma bercerita hasil pencarian.\n` +
+      `5. USER MINTA BUKA FILE ATAU FOLDER DI LAPTOP: LANGSUNG panggil open_app dengan nama foldernya (contoh: permintaan "buka folder Dasar Pemrograman" → open_app "Dasar Pemrograman"; kalau user kasih path "D:\\Semester 1" → open_app "D:\\Semester 1"). open_app menangani folder/file juga — JANGAN berhenti di find_file dan jangan cuma bercerita hasil pencarian.\n` +
+      `6. Permintaan soal ISI file (ringkas, jelaskan, bantu kerjakan tugasnya): panggil read_file atau list_dir dulu, lalu jawab isinya di chat. Membuat/mengubah file → write_file; kalau file sudah ada, buka dulu isinya, tanyakan ke user sebelum overwrite=true.\n` +
+      `7. Pertanyaan yang butuh info internet (berita, kamus, error, cara kerja, harga) yang tidak kamu yakin 100%: panggil search_web, jawab user dengan rangkuman 2-3 poin + sebutkan sumber singkat.\n` +
+      `8. Di akhir prompt ada KONTEKS LAYAR: judul window yang user buka saat ini. Rujukan seperti "yang tadi", "yang kebuka itu" merujuk ke situ. Jangan asal tebak path dari judul window — carikan dengan find_file dulu.\n` +
       `--- MEMORI AGENT ---\n${memory || "(masih kosong)"}`;
   if (skillName) {
     const body = skillBody(store.skillFiles[skillName] ?? "");
@@ -395,6 +469,7 @@ async function sendAgent(
       body +
       `\n--- GUNAKAN pengetahuan skill ini untuk menjawab (jangan sebut "skill" atau "injeksi") ---`;
   }
+  systemContent += screen;
 
   setStore({ activeSkill: skillName });
   const userMsg: AgentMessage = { role: "user", content: text };

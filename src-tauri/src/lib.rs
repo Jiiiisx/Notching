@@ -347,6 +347,277 @@ mod find_tests {
     }
 }
 
+/// Daftar judul window yang user lihat sekarang (konteks layar agent).
+#[cfg(target_os = "windows")]
+fn visible_window_titles() -> Vec<String> {
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowTextLengthW, GetWindowTextW, IsIconic, IsWindowVisible,
+    };
+    unsafe extern "system" fn cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let titles = unsafe { &mut *(lparam.0 as *mut Vec<String>) };
+        unsafe {
+            if IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() {
+                let len = GetWindowTextLengthW(hwnd);
+                if len > 0 && len < 200 {
+                    let mut buf = [0u16; 200];
+                    GetWindowTextW(hwnd, &mut buf);
+                    let t = String::from_utf16_lossy(&buf[..len as usize])
+                        .trim()
+                        .to_string();
+                    // Window tema/overlay/noise berjudul generik — buang.
+                    const SKIP: [&str; 5] = [
+                        "Program Manager",
+                        "Windows Input Experience",
+                        "Microsoft Text Input Application",
+                        "Settings",
+                        "NVIDIA GeForce Overlay",
+                    ];
+                    if !t.is_empty() && !SKIP.iter().any(|s| t.eq_ignore_ascii_case(s)) {
+                        titles.push(t);
+                    }
+                }
+            }
+        }
+        BOOL(1)
+    }
+    let mut titles: Vec<String> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(
+            Some(cb),
+            LPARAM(std::ptr::addr_of_mut!(titles) as isize),
+        );
+    }
+    // Dedup jaga urutan (z-order ≈ paling depan duluan).
+    let mut seen = std::collections::HashSet::new();
+    titles
+        .into_iter()
+        .filter(|t| seen.insert(t.to_lowercase()))
+        .take(12)
+        .collect()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn visible_window_titles() -> Vec<String> {
+    Vec::new()
+}
+
+#[tauri::command]
+fn list_windows() -> Vec<String> {
+    visible_window_titles()
+}
+
+/// Query jadi URL-encoded (spasi = '+').
+fn url_encode(q: &str) -> String {
+    let mut out = String::new();
+    for b in q.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char)
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Decode "%XX" + '+'→spasi (param uddg= link DuckDuckGo).
+fn url_decode(s: &str) -> String {
+    let b = s.replace('+', " ");
+    let bytes = b.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = &b[i + 1..i + 3];
+            if let Ok(v) = u8::from_str_radix(hex, 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Buang tag HTML: jadikan teks polos.
+fn strip_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.trim().to_string()
+}
+
+/// Parse HTML DuckDuckGo lite → (judul, url, snippet).
+fn parse_ddg(html: &str) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    for chunk in html.split("class=\"result__a\"").skip(1) {
+        let Some(hpos) = chunk.find("href=\"") else { continue };
+        let after_h = &chunk[hpos + 6..];
+        let Some(hend) = after_h.find('"') else { continue };
+        let href = &after_h[..hend];
+        let Some(cpos) = chunk.find("\">") else { continue };
+        let after_t = &chunk[cpos + 2..];
+        let Some(tend) = after_t.find("</a>") else { continue };
+        let title = strip_tags(&after_t[..tend]);
+        if title.is_empty() {
+            continue;
+        }
+        // //duckduckgo.com/l/?uddg=<encoded>&rut=... → URL asli.
+        let url = href
+            .split("uddg=")
+            .nth(1)
+            .map(|u| {
+                let raw = u.split('&').next().unwrap_or(u);
+                url_decode(raw)
+            })
+            .unwrap_or_else(|| href.to_string());
+        // Snippet: blok class="result__snippet" setelah judul.
+        let snippet = after_t[tend..]
+            .find("result__snippet")
+            .and_then(|spos| {
+                let rest = &after_t[tend + spos..];
+                rest.find("\">").map(|s2| {
+                    strip_tags(rest[s2 + 2..].split("</a>").next().unwrap_or("DEVNULL"))
+                })
+            })
+            .unwrap_or_default();
+        out.push((title, url, snippet));
+        if out.len() >= 8 {
+            break;
+        }
+    }
+    out
+}
+
+/// Parse HTML hasil Brave Search (server-rendered) → (judul, url, snippet).
+/// Anchor "data-type=\"web\"" tahan perubahan class svelte (hash berubah).
+fn parse_brave(html: &str) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    for chunk in html.split("data-type=\"web\"").skip(1) {
+        // Blok hasil berakhir sebelum section header berikutnya (diskusi/berita).
+        let scope = &chunk[..chunk.find("<header").unwrap_or(chunk.len())];
+        let Some(hpos) = scope.find("<a href=\"http") else { continue };
+        let after_h = &scope[hpos + 9..];
+        let Some(hend) = after_h.find('"') else { continue };
+        let url = after_h[..hend].to_string();
+        // Judul: <div class="title ..." title="...">...</div> — pakai atribut title= kalau ada.
+        let mut title = String::new();
+        if let Some(tpos) = scope.find("class=\"title ") {
+            let rest = &scope[tpos..];
+            if let Some(tend) = rest.find("</div>") {
+                let seg = &rest[..tend];
+                if let Some(q) = seg.find("title=\"") {
+                    let v = &seg[q + 7..];
+                    if let Some(e) = v.find('"') {
+                        title = strip_tags(v[..e].trim());
+                    }
+                }
+                if title.is_empty() {
+                    // fallback: teks di dalam div
+                    if let Some(g) = seg.find(">").map(|g| g + 1) {
+                        title = strip_tags(&seg[g..]);
+                    }
+                }
+            }
+        }
+        if title.is_empty() || url.starts_with("https://search.brave.com") {
+            continue;
+        }
+        // Snippet: isi div class="content ..." di dalam generic-snippet.
+        let snippet = scope
+            .find("generic-snippet")
+            .and_then(|gpos| {
+                let rest = &scope[gpos..];
+                rest.find("class=\"content ").and_then(|cpos| {
+                    let c = &rest[cpos..];
+                    c.find(">").map(|gt| {
+                        strip_tags(
+                            &c[gt + 1..]
+                                .split("</div>")
+                                .next()
+                                .unwrap_or("DEVNULL")
+                                .replace("&nbsp;", " "),
+                        )
+                    })
+                })
+            })
+            .unwrap_or_default();
+        let snippet = snippet.chars().take(300).collect::<String>();
+        out.push((title, url, snippet));
+        if out.len() >= 8 {
+            break;
+        }
+    }
+    out
+}
+
+/// Parse HTML hasil Bing → (judul, url, snippet).
+fn parse_bing(html: &str) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    for chunk in html.split("class=\"b_algo\"").skip(1) {
+        let Some(hpos) = chunk.find("href=\"") else { continue };
+        let after_h = &chunk[hpos + 6..];
+        let Some(hend) = after_h.find('"') else { continue };
+        let url = &after_h[..hend];
+        if !url.starts_with("http") {
+            continue;
+        }
+        // Judul: teks antara akhir tag <a ...> dan </a> pertama.
+        let Some(cpos) = after_h.find("\">") else { continue };
+        let after_t = &after_h[cpos + 2..];
+        let Some(tend) = after_t.find("</a>") else { continue };
+        let title = strip_tags(&after_t[..tend]);
+        if title.is_empty() {
+            continue;
+        }
+        // Snippet: isi <p ...> pertama di blok hasil.
+        let snippet = chunk
+            .find("<p")
+            .and_then(|ppos| {
+                let rest = &chunk[ppos..];
+                rest.find(">").map(|gt| {
+                    strip_tags(rest[gt + 1..].split("</p>").next().unwrap_or("DEVNULL"))
+                })
+            })
+            .unwrap_or_default();
+        let snippet = snippet.chars().take(300).collect::<String>();
+        out.push((title, url.to_string(), snippet));
+        if out.len() >= 8 {
+            break;
+        }
+    }
+    out
+}
+
+/// Guard: agent tidak boleh menulis di area sistem Windows.
+fn write_denied(path: &str) -> Option<String> {
+    let lower = path.replace('/', r"\\").to_lowercase();
+    const DENIED: [&str; 6] = [
+        r"C:\\Windows",
+        r"C:\\Program Files",
+        r"C:\\Program Files (x86)",
+        r"C:\\ProgramData",
+        r"C:\\Users\\Public",
+        r"C:\\Users\\Default",
+    ];
+    DENIED
+        .iter()
+        .find(|d| lower.starts_with(d.to_lowercase().as_str()))
+        .map(|d| format!("Jangan tulis di area sistem ({d})"))
+}
+
 #[tauri::command]
 fn agent_run_tool(
     app: AppHandle,
@@ -408,6 +679,171 @@ fn agent_run_tool(
                 .open_url(&url, None::<&str>)
                 .map_err(|e| e.to_string())?;
             Ok(format!("Dibuka: {}", url))
+        }
+        "read_file" => {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or("path wajib diisi (absolut)")?;
+            let p = std::path::Path::new(path)
+                .canonicalize()
+                .map_err(|_| format!("Path tidak ditemukan: {path}"))?;
+            if p.is_dir() {
+                return Err("Folder, bukan file. Untuk isi folder pakai list_dir.".to_string());
+            }
+            let meta = std::fs::metadata(&p).map_err(|e| e.to_string())?;
+            if meta.len() > 2_000_000 {
+                return Err(format!("File terlalu besar ({}, maks 2 MB teks)", meta.len()));
+            }
+            let data = std::fs::read(&p).map_err(|e| e.to_string())?;
+            if data.contains(&0) {
+                return Err("File biner (docx/xlsx/gambar?) tidak bisa dibaca sebagai teks.".to_string());
+            }
+            let text = String::from_utf8_lossy(&data);
+            let chars: Vec<char> = text.chars().collect();
+            if chars.len() > 6000 {
+                Ok(format!(
+                    "{}\n(terpotong, total {} karakter — pakai arg path ke bagian berikut kalau butuh)",
+                    chars[..6000].iter().collect::<String>(),
+                    chars.len()
+                ))
+            } else {
+                Ok(text.into_owned())
+            }
+        }
+        "write_file" => {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or("path wajib diisi (absolut)")?;
+            let content = args
+                .get("content")
+                .and_then(|v| v.as_str())
+                .ok_or("content wajib diisi")?;
+            let overwrite = args
+                .get("overwrite")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let p = std::path::Path::new(path);
+            if !p.is_absolute() {
+                return Err("Path harus absolut (mis. D:\\Semester 1\\tugas.md).".to_string());
+            }
+            if let Some(msg) = write_denied(path) {
+                return Err(msg);
+            }
+            if p.exists() && !overwrite {
+                return Err(format!(
+                    "File sudah ada: {}. Jangan timpa diam-diam. Baca dulu (read_file), lalu tanya user yakin mau ditimpa; kalau iya, panggil lagi dengan overwrite=true.",
+                    p.display()
+                ));
+            }
+            if let Some(dir) = p.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            }
+            std::fs::write(p, content).map_err(|e| e.to_string())?;
+            Ok(format!(
+                "Tersimpan: {} ({} bytes)",
+                p.display(),
+                content.len()
+            ))
+        }
+        "list_dir" => {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or("path wajib diisi (absolut)")?;
+            let p = std::path::Path::new(path)
+                .canonicalize()
+                .map_err(|_| format!("Folder tidak ditemukan: {path}"))?;
+            if !p.is_dir() {
+                return Err(format!("Bukan folder: {}", p.display()));
+            }
+            let mut dirs: Vec<String> = Vec::new();
+            let mut files: Vec<(String, u64)> = Vec::new();
+            let mut overflow = false;
+            let mut count = 0usize;
+            for entry in (std::fs::read_dir(&p).map_err(|e| e.to_string())?).flatten() {
+                count += 1;
+                if count > 150 {
+                    overflow = true;
+                    break;
+                }
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if entry.path().is_dir() {
+                    dirs.push(format!("{name}\\"));
+                } else {
+                    files.push((name, entry.metadata().map(|m| m.len()).unwrap_or(0)));
+                }
+            }
+            let mut lines = dirs;
+            files.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+            for (name, len) in files {
+                lines.push(format!("{name} ({len} b)"));
+            }
+            let mut out = lines.join("\n");
+            if lines.is_empty() {
+                out = "(folder kosong)".to_string();
+            }
+            if overflow {
+                out.push_str("\n(dari 150 entri pertama — percisikan/ke folder yang lebih dalem)");
+            }
+            Ok(out)
+        }
+        "search_web" => {
+            let query = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .ok_or("query wajib diisi")?;
+            let q = url_encode(query);
+            let fetch = |url: &str| -> Result<String, String> {
+                let out = std::process::Command::new("curl.exe")
+                    .args([
+                        "-s",
+                        "-m",
+                        "15",
+                        "-A",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                        url,
+                    ])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output()
+                    .map_err(|e| format!("Gagal menjalankan curl: {e}"))?;
+                Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+            };
+            // Mesin utama Brave (server-rendered; DDG/Bing sering diblok/rusak via curl).
+            let mut results = parse_brave(
+                &fetch(&format!("https://search.brave.com/search?q={q}")).unwrap_or_default(),
+            );
+            if results.is_empty() {
+                // Fallback Bing html.
+                if let Ok(h1) = fetch(&format!(
+                    "https://www.bing.com/search?q={q}&count=10&mkt=id-ID"
+                )) {
+                    results = parse_bing(&h1);
+                }
+            }
+            if results.is_empty() {
+                // Fallback DDG lite (blok di banyak jaringan Indonesia).
+                if let Ok(h2) = fetch(&format!("https://html.duckduckgo.com/html/?q={q}")) {
+                    results = parse_ddg(&h2);
+                }
+            }
+            if results.is_empty() {
+                return Err("Pencarian web gagal (rate limit atau jaringan bermasalah). Tanyakan ke user mau dicoba lagi nanti.".to_string());
+            }
+            Ok(results
+                .iter()
+                .take(6)
+                .enumerate()
+                .map(|(i, (t, u, s))| {
+                    if s.is_empty() {
+                        format!("{}. {t}\n   {u}", i + 1)
+                    } else {
+                        format!("{}. {t}\n   {s}\n   {u}", i + 1)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n"))
         }
         "find_file" => {
             let query = args
@@ -539,6 +975,52 @@ fn agent_run_tool(
             ))
         }
         _ => Err(format!("Tool {} tidak ada", name)),
+    }
+}
+
+#[cfg(test)]
+#[rustfmt::skip]
+mod agent_smart_tests {
+    use super::{parse_brave, parse_bing, parse_ddg, url_decode, url_encode, write_denied};
+    #[test]
+    fn encodes_and_decodes_query() {
+        assert_eq!(url_encode("membuat login PHP?"), "membuat+login+PHP%3F");
+        assert_eq!(url_decode("membuat+login+PHP%3F"), "membuat login PHP?");
+        assert_eq!(url_decode(&url_encode("a&b=c d/e")), "a&b=c d/e");
+    }
+    #[test]
+    fn parses_ddg_results() {
+        let html = r##"<div class="result"><a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fcontoh.dev%2Fcara-buat-login&rut=abc">Cara buat login PHP</a></div><a class="result__snippet" href="#">Snippet <b>teks</b> pertama</a>"##;
+        let r = parse_ddg(html);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].0, "Cara buat login PHP");
+        assert_eq!(r[0].1, "https://contoh.dev/cara-buat-login");
+        assert_eq!(r[0].2, "Snippet teks pertama");
+    }
+    #[test]
+    fn parses_bing_results() {
+        let html = r##"<li class="b_algo"><div><h2><a href="https://contoh.dev/bing">Judul Bing</a></h2><div class="b_caption"><p class="b_lineclamp">Snippet <b>Bing</b> pertama</p></div></div></li>"##;
+        let r = parse_bing(html);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].0, "Judul Bing");
+        assert_eq!(r[0].1, "https://contoh.dev/bing");
+        assert_eq!(r[0].2, "Snippet Bing pertama");
+    }
+    #[test]
+    fn parses_brave_results() {
+        let html = r##"<div class="snippet svelte-x" data-pos="1" data-type="web"><a href="https://contoh.dev/brave" class="svelte-14r20fy l1"><cite class="snippet-url">contoh.dev</cite><div class="title search-snippet-title svelte" title="Judul Brave">Judul Brave</div></a><div class="generic-snippet svelte"><div class="content svelte">Snip <b>brave</b> satu&nbsp;satu</div></div></div>"##;
+        let r = parse_brave(html);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].0, "Judul Brave");
+        assert_eq!(r[0].1, "https://contoh.dev/brave");
+        assert_eq!(r[0].2, "Snip brave satu satu");
+    }
+    #[test]
+    fn blocks_system_write_paths() {
+        assert!(write_denied(r"C:\\Windows\\System32\\x.txt").is_some());
+        assert!(write_denied("C:/program files/app/config.ini").is_some());
+        assert!(write_denied(r"D:\\Semester 1\\tugas.md").is_none());
+        assert!(write_denied(r"C:\\Users\\HYPE AMD\\Documents\\notes.md").is_none());
     }
 }
 
@@ -968,6 +1450,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_notch_config,
             agent_run_tool,
+            list_windows,
             agent_list_skills,
             agent_read_skill,
             agent_memory_read,
