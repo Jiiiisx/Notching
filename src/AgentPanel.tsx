@@ -301,6 +301,16 @@ function save(): void {
 
 let abortCtrl: AbortController | null = null;
 
+// One turn sent to the API; tool turns carry the official compliment fields
+// so follow.OpenAI-compatible routers map them to native tool results.
+type CallMsg = {
+  role: string;
+  content: string;
+  tool_calls?: { id: string; type: "function"; function: { name: string; arguments: string } }[];
+  tool_call_id?: string;
+  name?: string;
+};
+
 const cleanOut = (t: string) =>
   t
     // Buang sisa markup function-call model (</invoke>, <function_call>, dll)
@@ -311,9 +321,10 @@ const cleanOut = (t: string) =>
 
 async function callModel(
   controller: AbortController,
-  convo: { role: string; content: string }[],
+  convo: CallMsg[],
   systemContent: string,
-  config: AgentConfig
+  config: AgentConfig,
+  includeTools = true
 ) {
   const url = `${config.baseUrl.replace(/\/+$/, "")}/chat/completions`;
   const res = await fetch(url, {
@@ -330,7 +341,8 @@ async function callModel(
         { role: "system", content: systemContent },
         ...convo.slice(-MAX_CONTEXT_MESSAGES),
       ],
-      tools: TOOLS,
+      // Round tanpa tools = memaksa jawaban final (jaring pengaman di batas putaran).
+      ...(includeTools ? { tools: TOOLS } : {}),
     }),
   });
   if (!res.ok) {
@@ -342,7 +354,7 @@ async function callModel(
       message: {
         role: "assistant";
         content: string | null;
-        tool_calls?: { id: string; type: "function"; function: { name: string; arguments: string } }[];
+        tool_calls?: CallMsg["tool_calls"];
       };
     }[];
   };
@@ -482,11 +494,11 @@ async function sendAgent(
   try {
     // Tool loop: model may request tool calls; execute them locally, feed
     // results back, and let it produce the final answer. Capped rounds.
-    const convo: { role: string; content: string }[] = [
+    const convo: CallMsg[] = [
       ...baseHistory.map((m) => ({ role: m.role as string, content: m.content })),
     ];
     let history = baseHistory;
-    let lastExecuted: Exec[] = [];
+    const allExec: Exec[] = [];
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       const json = await callModel(controller, convo, systemContent, config);
       const msg = json.choices?.[0]?.message;
@@ -498,8 +510,8 @@ async function sendAgent(
           // Model jawab kosong setelah eksekusi tool → jangan tampilkan
           // bubble kosong; rangkum sendiri dari hasil tool (ponytail:
           // teks generik, upgrade dengan per-tool phrasing kalau terasa kaku).
-          const okNames = lastExecuted.filter((e) => e.ok).map((e) => e.name);
-          const failNames = lastExecuted.filter((e) => !e.ok).map((e) => e.name);
+          const okNames = allExec.filter((e) => e.ok).map((e) => e.name);
+          const failNames = allExec.filter((e) => !e.ok).map((e) => e.name);
           const parts = [
             okNames.length ? `dah kujalanin ${okNames.join(" dan ")}` : "",
             failNames.length ? `tapi ${failNames.join(" dan ")} gagal` : "",
@@ -529,6 +541,11 @@ async function sendAgent(
       }
       setStore({ toolNote: `Menjalankan ${toolCalls.map((c) => c.function.name).join(", ")}…` });
       const executed: Exec[] = [];
+      // Assistant turn asli DENGAN tool_calls → router memetakan pasangan
+      // assistant(tool_calls) + role:"tool" ke protokol tool native backend
+      // (sebelumnya hasil tool dikirim sebagai chat assistant biasa dan bisa
+      // hilang saat konversi → model mengulang tool yang sama sampai batas).
+      convo.push({ role: "assistant", content: msg.content ?? "", tool_calls: toolCalls });
       for (const call of toolCalls) {
         const [name, ok, detail] = await runTool(
           call.function.name,
@@ -536,24 +553,47 @@ async function sendAgent(
         );
         executed.push({ name, ok, detail });
         convo.push({
-          role: "assistant",
-          content: `${name} → ${ok ? "OK" : "GAGAL"}: ${detail}`,
+          role: "tool",
+          tool_call_id: call.id,
+          name: call.function.name,
+          content: `${ok ? "OK" : "GAGAL"}: ${detail}`,
         });
       }
+      allExec.push(...executed);
       setStore({ toolMessages: executed });
-      lastExecuted = executed;
       // Nudge: model sering balas kosong/verbatim setelah tool round.
       convo.push({
         role: "user",
         content:
-          "Periksa dulu: apakah permintaan user sudah SELESAI dijalankan? Kalau belum (mis. setelah find_file masih perlu open_file, atau harus lanjut langkah berikutnya), LANGSUNG panggil tool berikutnya sekarang — jangan mengaku 'sudah kubuka' kalau belum dieksekusi. Kalau sudah selesai, jawab user: rangkum hasil dalam 1-2 kalimat santai (bahasa Indonesia, gaya teman), TANPA kode/tag markup/nama tool. Jangan jawab kosong.",
+          "Periksa dulu: apakah permintaan user sudah SELESAI? Kalau belum dan tool berikutnya jelas dibutuhkan, panggil sekarang. Kalau info sudah cukup ATAU putaran keputaran, JANGAN panggil tool lagi — langsung jawab user: rangkum hasil dalam 1-3 kalimat santai (bahasa Indonesia, gaya teman), TANPA kode/tag markup/nama tool. Jangan jawab kosong.",
       });
       setStore({ toolNote: null });
     }
-    // hit tool round cap without a final text answer
+    // Hit tool round cap without a final text answer: satu panggilan TERAKHIR
+    // tanpa tools untuk memaksa ringkasan dari hasil yang sudah dikumpulkan.
+    try {
+      const forceRes = await callModel(controller, convo, systemContent, config, false);
+      const forced = cleanOut(forceRes.choices?.[0]?.message?.content ?? "");
+      if (forced) {
+        history = [...history, { role: "assistant", content: forced }];
+        setStore({ messages: history });
+        save();
+        return;
+      }
+    } catch {
+      /* gagal paksa jawab → jatuh ke pesan generik */
+    }
+    const tally = allExec.reduce<Record<string, number>>((acc, e) => {
+      const key = `${e.name}${e.ok ? "" : " (gagal)"}`;
+      acc[key] = (acc[key] ?? 0) + 1;
+      return acc;
+    }, {});
     history = [
       ...history,
-      { role: "assistant", content: "Berhenti: batas putaran tool tercapai tanpa jawaban final." },
+      {
+        role: "assistant",
+        content: `Aku berhenti karena jatah putaran tool habis (${MAX_TOOL_ROUNDS}) sebelum bisa jawab lengkap. Yang sempat jalan: ${Object.entries(tally).map(([n, c]) => `${n} ×${c}`).join(", ") || "-"}. Coba lanjut dengan permintaan lebih kecil ya.`,
+      },
     ];
     setStore({ messages: history });
     save();
