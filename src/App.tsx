@@ -838,17 +838,28 @@ export default function App() {
 
   // Pause auto-collapse while a popup menu is open or a text field inside the notch has focus —
   // menus overflow the notch rect (triggering mouseleave) and typing must never shrink the panel.
+  // Fokus saja TIDAK cukup: overlay WS_EX_NOACTIVATE tidak pernah kirim blur ke browser lain,
+  // jadi textarea agent bisa "nyangkut" fokus selamanya. Karena itu hitung nilai: field kosong
+  // dianggap tidak aktif (tidak ada draft yang harus dilindungi), ada isi = tahan collapse.
   const interactiveRef = useRef(false);
   const quickMenuOpenRef = useRef(false);
   const audioSwitcherOpenRef = useRef(false);
   const recomputeInteractive = () => {
-    const el = document.activeElement;
-    const typing =
+    const el = document.activeElement as HTMLElement | null;
+    const fieldFocused =
       !!el &&
       (el.tagName === "INPUT" ||
         el.tagName === "TEXTAREA" ||
-        (el as HTMLElement).isContentEditable === true);
-    interactiveRef.current = typing || quickMenuOpenRef.current || audioSwitcherOpenRef.current;
+        el.isContentEditable === true);
+    const hasDraft = !!el &&
+      ((el.tagName === "INPUT" || el.tagName === "TEXTAREA"
+        ? (el as HTMLInputElement).value
+        : (el.textContent ?? "")
+      ).trim().length > 0);
+    interactiveRef.current =
+      (fieldFocused && hasDraft) ||
+      quickMenuOpenRef.current ||
+      audioSwitcherOpenRef.current;
   };
   useEffect(() => {
     const onFocusOut = () => window.setTimeout(recomputeInteractive, 0);
