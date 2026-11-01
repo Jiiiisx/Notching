@@ -43,6 +43,8 @@ windows = { version = "0.62", features = [
     "Media_Control",
     "Storage_Streams",
 ] }
+pdf-extract = "0.12.1"
+zip = { version = "9.2.0", default-features = false, features = ["deflate"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

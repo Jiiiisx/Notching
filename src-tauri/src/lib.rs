@@ -618,6 +618,40 @@ fn write_denied(path: &str) -> Option<String> {
         .map(|d| format!("Jangan tulis di area sistem ({d})"))
 }
 
+/// Decode entitas XML dasar.
+fn xml_unescape(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+/// Isi teks file .docx: baca word/document.xml dari zip, buang tag-nya.
+fn docx_text(path: &std::path::Path) -> Result<String, String> {
+    use std::io::Read;
+    let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut z = zip::ZipArchive::new(std::io::BufReader::new(f))
+        .map_err(|_| "File .docx tidak bisa dibuka (bukan dokumen Word valid)".to_string())?;
+    let mut xml = String::new();
+    z.by_name("word/document.xml")
+        .map_err(|_| "word/document.xml tidak ada di file docx ini".to_string())?
+        .read_to_string(&mut xml)
+        .map_err(|e| e.to_string())?;
+    // Paragraf dan <br> jadi baris baru, tab jadi tab, lalu buang sisa tag.
+    let markup = xml
+        .replace("</w:p>", "\n")
+        .replace("<w:br/>", "\n")
+        .replace("<w:tab/>", "\t");
+    Ok(xml_unescape(&strip_tags(&markup)))
+}
+
+/// Isi teks file .pdf (lapisan teksnya, bukan hasil scan gambar).
+fn pdf_text(path: &std::path::Path) -> Result<String, String> {
+    pdf_extract::extract_text(path)
+        .map_err(|_| "PDF ini tidak punya lapisan teks yang bisa dibaca (hasil scan/gambar)".to_string())
+}
+
 #[tauri::command]
 fn agent_run_tool(
     app: AppHandle,
@@ -692,23 +726,43 @@ fn agent_run_tool(
                 return Err("Folder, bukan file. Untuk isi folder pakai list_dir.".to_string());
             }
             let meta = std::fs::metadata(&p).map_err(|e| e.to_string())?;
-            if meta.len() > 2_000_000 {
-                return Err(format!("File terlalu besar ({}, maks 2 MB teks)", meta.len()));
+            if meta.len() > 20_000_000 {
+                return Err(format!("File terlalu besar ({}, maks 20 MB)", meta.len()));
             }
-            let data = std::fs::read(&p).map_err(|e| e.to_string())?;
-            if data.contains(&0) {
-                return Err("File biner (docx/xlsx/gambar?) tidak bisa dibaca sebagai teks.".to_string());
-            }
-            let text = String::from_utf8_lossy(&data);
+            let ext = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_lowercase())
+                .unwrap_or_default();
+            let text = match ext.as_str() {
+                "docx" => docx_text(&p)?,
+                "pdf" => pdf_text(&p)?,
+                _ => {
+                    if meta.len() > 2_000_000 {
+                        return Err(format!(
+                            "File teks terlalu besar ({}, maks 2 MB)",
+                            meta.len()
+                        ));
+                    }
+                    let data = std::fs::read(&p).map_err(|e| e.to_string())?;
+                    if data.contains(&0) {
+                        return Err(
+                            "File biner (xlsx/pptx/gambar?) tidak bisa dibaca sebagai teks."
+                                .to_string(),
+                        );
+                    }
+                    String::from_utf8_lossy(&data).into_owned()
+                }
+            };
             let chars: Vec<char> = text.chars().collect();
             if chars.len() > 6000 {
                 Ok(format!(
-                    "{}\n(terpotong, total {} karakter — pakai arg path ke bagian berikut kalau butuh)",
+                    "{}\n(terpotong, total {} karakter)",
                     chars[..6000].iter().collect::<String>(),
                     chars.len()
                 ))
             } else {
-                Ok(text.into_owned())
+                Ok(text)
             }
         }
         "write_file" => {
@@ -981,7 +1035,7 @@ fn agent_run_tool(
 #[cfg(test)]
 #[rustfmt::skip]
 mod agent_smart_tests {
-    use super::{parse_brave, parse_bing, parse_ddg, url_decode, url_encode, write_denied};
+    use super::{docx_text, parse_brave, parse_bing, parse_ddg, pdf_text, url_decode, url_encode, write_denied};
     #[test]
     fn encodes_and_decodes_query() {
         assert_eq!(url_encode("membuat login PHP?"), "membuat+login+PHP%3F");
@@ -1014,6 +1068,36 @@ mod agent_smart_tests {
         assert_eq!(r[0].0, "Judul Brave");
         assert_eq!(r[0].1, "https://contoh.dev/brave");
         assert_eq!(r[0].2, "Snip brave satu satu");
+    }
+    #[test]
+    fn extracts_docx_text() {
+        use std::io::Write as _;
+        let buf = std::io::Cursor::new(Vec::new());
+        let mut w = zip::ZipWriter::new(buf);
+        let mut opts = zip::write::SimpleFileOptions::default();
+        opts = opts.compression_method(zip::CompressionMethod::Deflated);
+        w.start_file("word/document.xml", opts).unwrap();
+        w.write_all(
+            b"<w:document><w:body><w:p><w:r><w:t>Hello &amp; hai</w:t></w:r></w:p><w:p><w:r><w:t>Baris dua</w:t></w:r></w:p></w:body></w:document>",
+        )
+        .unwrap();
+        let file = w.finish().unwrap();
+        let path = std::env::temp_dir().join("notch_docx_test.docx");
+        std::fs::write(&path, file.into_inner()).unwrap();
+        let out = docx_text(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(out.contains("Hello & hai"));
+        assert!(out.contains("Baris dua"));
+    }
+    #[test]
+    #[ignore] // butuh file user; jalankan manual: cargo test extracts_real -- --ignored
+    fn extracts_real_pdf_text() {
+        let p = r"D:\Semester 1\Dasar Pemrograman\Pertemuan 10\Modul_Praktikum_8_Array_Satu_Dimensi_dan_Sequential_Search - MHS.pdf";
+        if !std::path::Path::new(p).exists() {
+            return; // file dipindah/hapus di laptop lain — skip, bukan gagal
+        }
+        let t = pdf_text(std::path::Path::new(p)).unwrap();
+        assert!(t.contains("Array"));
     }
     #[test]
     fn blocks_system_write_paths() {
