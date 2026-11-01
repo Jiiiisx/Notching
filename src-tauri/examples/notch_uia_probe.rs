@@ -19,13 +19,14 @@ fn find_brave_window() -> Option<HWND> {
     unsafe {
         let mut hwnd = GetTopWindow(None).ok()?;
         let mut steps = 0;
-        while !hwnd.is_invalid() && steps < 300 {
+        while !hwnd.is_invalid() && steps < 600 {
             steps += 1;
             if IsWindowVisible(hwnd).as_bool() {
                 let mut buf = [0u16; 512];
                 let len = GetWindowTextW(hwnd, &mut buf);
                 let title = String::from_utf16_lossy(&buf[..len as usize]);
                 if title.contains("Brave") {
+                    println!("BRAVE z-step={steps}");
                     return Some(hwnd);
                 }
             }

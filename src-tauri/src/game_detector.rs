@@ -211,7 +211,7 @@ fn find_topmost_browser_behind_notch(
         let mut curr = GetTopWindow(None).ok()?;
         let mut steps = 0;
 
-        while !curr.0.is_null() && steps < 60 {
+        while !curr.0.is_null() && steps < 300 {
             steps += 1;
             let next = GetWindow(curr, GW_HWNDNEXT).ok();
 
