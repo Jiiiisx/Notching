@@ -703,6 +703,9 @@ export default function App() {
   }, [expanded]);
 
   const isCompact = !expanded && (Boolean(settings.compactMode) || (Boolean(settings.smartTabAvoidance ?? true) && isSmartCompact));
+  // Smart Tab Avoidance "hide": notch shrinks to a thin line (20x8) while browser tabs sit behind
+  // it — manual compactMode (114px stub) keeps priority, hide view is for tab avoidance only.
+  const isSmartHide = isSmartCompact && !Boolean(settings.compactMode);
 
   // Track monitor changes to trigger smooth 3-phase bezel retract -> move -> drop animation
   const prevMonitorRef = useRef<string | undefined>(undefined);
@@ -832,7 +835,7 @@ export default function App() {
   // Update geometry when compact state toggles while collapsed
   useEffect(() => {
     if (!expandedRef.current && !isTransitioningRef.current) {
-      updateGeometry(false, isCompact ? 114 : dynamicCollapsedWidth, isCompact ? 22 : dims.collapsed_height);
+      updateGeometry(false, isSmartHide ? 20 : isCompact ? 114 : dynamicCollapsedWidth, isSmartHide ? 8 : isCompact ? 22 : dims.collapsed_height);
     }
   }, [isCompact]);
 
@@ -925,7 +928,7 @@ export default function App() {
     }
     setShowAudioSwitcher(false);
     isTransitioningRef.current = false;
-    updateGeometry(false, isCompact ? 114 : dynamicCollapsedWidth, isCompact ? 22 : dims.collapsed_height);
+    updateGeometry(false, isSmartHide ? 20 : isCompact ? 114 : dynamicCollapsedWidth, isSmartHide ? 8 : isCompact ? 22 : dims.collapsed_height);
     invoke("trim_memory").catch(() => {});
   };
 
@@ -1620,11 +1623,14 @@ export default function App() {
 
   // Dynamic width when collapsed based on lyric length with adaptive font scaling
   const dynamicCollapsedWidth = useMemo(() => {
+    if (isSmartHide) {
+      return 20;
+    }
     if (isCompact) {
       return 114;
     }
     return naturalCollapsedWidth;
-  }, [isCompact, naturalCollapsedWidth]);
+  }, [isSmartHide, isCompact, naturalCollapsedWidth]);
 
   // Track text overflow for continuous marquee if lyric exceeds max width
   const lyricOverflowInfo = useMemo(() => {
@@ -1656,6 +1662,7 @@ export default function App() {
     if (!expanded) {
       if (isNotifToastVisible) return Math.max(dynamicCollapsedWidth, 360);
       if (showVolumeHud) return 260;
+      if (isSmartHide) return 20;
       return isCompact ? 114 : dynamicCollapsedWidth;
     }
     if (showAudioSwitcher) return 480;
@@ -1669,6 +1676,7 @@ export default function App() {
     if (!expanded) {
       if (isNotifToastVisible) return 58;
       if (showVolumeHud && isCompact) return 26;
+      if (isSmartHide) return 8;
       return isCompact ? 22 : dims.collapsed_height;
     }
     if (showAudioSwitcher) return 335;
@@ -2045,6 +2053,18 @@ export default function App() {
                     <span className="font-mono text-xs tabular-nums font-semibold text-neutral-300 w-8 text-right shrink-0">
                       {audioStatus?.is_muted ? "0%" : `${Math.round((audioStatus?.master_volume ?? 0) * 100)}%`}
                     </span>
+                  </motion.div>
+                ) : isSmartHide ? (
+                  /* Smart Tab Avoidance hide: thin indicator line, hover expands */
+                  <motion.div
+                    key="smart-hide-view"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.14 }}
+                    className="flex items-center justify-center w-full h-full select-none"
+                  >
+                    <span className="w-2.5 h-[3px] rounded-full bg-neutral-600/70" />
                   </motion.div>
                 ) : isCompact ? (
                   /* Compact Pill Content */
