@@ -870,6 +870,14 @@ export default function App() {
       document.removeEventListener("focusout", onFocusOut, true);
     };
   }, []);
+  // Nilai field berubah TANPA focus event (mengetik di field yang sudah lama
+  // terfokus) → recompute juga setiap keystroke, else interactiveRef stale.
+  useEffect(() => {
+    document.addEventListener("input", recomputeInteractive, true);
+    return () => {
+      document.removeEventListener("input", recomputeInteractive, true);
+    };
+  }, []);
   useEffect(() => {
     quickMenuOpenRef.current = showQuickMenu;
     audioSwitcherOpenRef.current = showAudioSwitcher;
@@ -1070,6 +1078,10 @@ export default function App() {
     if (collapseTimerRef.current) return;
     collapseTimerRef.current = window.setTimeout(() => {
       collapseTimerRef.current = null;
+      // Recheck saat timer jalan: field bisa jadi aktif SETELAH timer dijadwalkan
+      // (mouse keluar → user mulai mengetik field kosong dalam 80-140 ms).
+      recomputeInteractive();
+      if (interactiveRef.current) return;
       isTransitioningRef.current = true;
       expandedRef.current = false;
       setExpanded(false);
