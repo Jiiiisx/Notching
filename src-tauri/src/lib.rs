@@ -1210,6 +1210,11 @@ fn set_game_mode(state: tauri::State<Arc<game_detector::GameDetectorState>>, ena
 }
 
 #[tauri::command]
+fn set_outside_click_armed(armed: bool) {
+    hit_test::OUTSIDE_ARMED.store(armed, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[tauri::command]
 fn set_smart_tab_avoidance(
     state: tauri::State<Arc<game_detector::GameDetectorState>>,
     enabled: bool,
@@ -1545,6 +1550,7 @@ pub fn run() {
             get_available_monitors,
             set_game_mode,
             set_smart_tab_avoidance,
+            set_outside_click_armed,
             get_media_track,
             media_toggle_play,
             media_next_track,

@@ -838,6 +838,24 @@ export default function App() {
     };
   }, []);
 
+  // Click di luar notch saat expanded menutup panel (event dari LL mouse hook,
+  // rust hit_test.rs). interactiveRef menjaga logika modul: field teks yang ada
+  // isinya, menu "...", dan audio switcher TIDAK ikut tertutup.
+  useEffect(() => {
+    const p = listen("notch-outside-click", () => {
+      if (expandedRef.current && !interactiveRef.current) {
+        handleManualCollapse();
+      }
+    });
+    return () => {
+      p.then((fn) => fn());
+    };
+  }, []);
+  // Arm outside-click detection hanya saat pill expanded
+  useEffect(() => {
+    invoke("set_outside_click_armed", { armed: expanded });
+  }, [expanded]);
+
   // Auto-dismiss transient UI error banner
   useEffect(() => {
     if (!uiError) return;

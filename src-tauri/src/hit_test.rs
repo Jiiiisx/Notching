@@ -8,7 +8,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, GetCursorPos, GetWindowRect, MSG,
     MSLLHOOKSTRUCT, PostThreadMessageW, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
-    WH_MOUSE_LL, WM_MOUSEWHEEL,
+    WH_MOUSE_LL, WM_LBUTTONDOWN, WM_MOUSEWHEEL,
 };
 
 #[derive(Debug, Clone)]
@@ -87,6 +87,26 @@ unsafe extern "system" fn wheel_hook_proc(
 ) -> LRESULT {
     unsafe {
         // NOTE: callback-statics only; never call Tauri APIs from LL hooks.
+        if code >= 0 && wparam.0 as u32 == WM_LBUTTONDOWN && OUTSIDE_ARMED.load(Ordering::Acquire) {
+            let m = *(lparam.0 as *const MSLLHOOKSTRUCT);
+            let hwnd_v = NOTCH_HWND.load(Ordering::Relaxed);
+            if hwnd_v != 0 {
+                let hwnd = HWND(hwnd_v as isize as *mut _);
+                let mut rect = RECT::default();
+                if GetWindowRect(hwnd, &mut rect).is_ok() {
+                    let inside = m.pt.x >= rect.left
+                        && m.pt.x < rect.right
+                        && m.pt.y >= rect.top
+                        && m.pt.y < rect.bottom;
+                    if !inside {
+                        let tid = WHEEL_PUMP_TID.load(Ordering::Acquire);
+                        if tid != 0 {
+                            let _ = PostThreadMessageW(tid, WM_APP_OUTSIDE, WPARAM(0), LPARAM(0));
+                        }
+                    }
+                }
+            }
+        }
         if code >= 0 && wparam.0 as u32 == WM_MOUSEWHEEL {
             let m = *(lparam.0 as *const MSLLHOOKSTRUCT);
             if let Some(state) = WHEEL_STATE.get() {
@@ -118,6 +138,10 @@ unsafe extern "system" fn wheel_hook_proc(
 
 // Stored once at hook startup; OnceLock keeps the callback signature simple.
 static WHEEL_STATE: std::sync::OnceLock<Arc<HitTestState>> = std::sync::OnceLock::new();
+// Armed only while the pill is expanded: outside left-clicks then collapse the notch.
+// Toggled from the frontend via the `set_outside_click_armed` command.
+pub static OUTSIDE_ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+const WM_APP_OUTSIDE: u32 = 0xB502;
 static WHEEL_PUMP_TID: AtomicU32 = AtomicU32::new(0);
 const WM_APP_WHEEL: u32 = 0xB501;
 
@@ -145,6 +169,12 @@ pub fn start_wheel_redirect(app: AppHandle, state: Arc<HitTestState>) {
                 let r = GetMessageW(&mut msg, None, 0, 0);
                 if r.0 <= 0 {
                     break;
+                }
+                if msg.message == WM_APP_OUTSIDE {
+                    let _ = app.emit("notch-outside-click", ());
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                    continue;
                 }
                 if msg.message == WM_APP_WHEEL {
                     let mouse_data = msg.wParam.0 as u32;
