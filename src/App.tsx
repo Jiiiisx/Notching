@@ -1669,6 +1669,8 @@ export default function App() {
     if (activeModule === "todo" || activeModule === "shelf" || activeModule === "notifications") return 520;
     if (expandedView === "lyrics" || expandedView === "queue") return 480;
     if (activeModule === "perf") return 480;
+    // Player view carries the extra Player/Lyrics/Queue switcher in the header — give it room
+    if (activeModule === "media") return 500;
     return 460;
   }, [expanded, isCompact, dynamicCollapsedWidth, isNotifToastVisible, showVolumeHud, showAudioSwitcher, activeModule, expandedView]);
 
@@ -2545,6 +2547,9 @@ export default function App() {
                   {/* Module Navigation: centred, out of the action cluster */}
                   <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-0.5 px-1 py-0.5 bg-white/5 rounded-full border border-white/5">
                     {pinnedNav.map(({ id, label, icon: Icon }) => {
+                      // Media icon is redundant while the media module (with its own view
+                      // switcher) is active — hiding it opens room in the header row
+                      if (id === "media" && activeModule === "media") return null;
                       const isActive = activeModule === id;
                       const hasUnread = id === "notifications" && unreadNotifCount > 0;
                       return (
