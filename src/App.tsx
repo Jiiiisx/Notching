@@ -2619,7 +2619,34 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Overflow menu: audio, monitor, pin, settings */}
+                  {/* Audio switcher: direct one-click access from any module */}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowAudioSwitcher(true);
+                    }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      cycleAudioOutput();
+                    }}
+                    title="Klik: perangkat audio · Klik-kanan: ganti output langsung"
+                    aria-label="Perangkat audio"
+                    className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                      showAudioSwitcher
+                        ? "bg-white/20 text-white"
+                        : "text-neutral-400 hover:text-white hover:bg-white/10"
+                    }`}
+                  >
+                    {audioStatus?.is_muted || audioStatus?.master_volume === 0 ? (
+                      <VolumeX className="w-3.5 h-3.5 text-rose-400" />
+                    ) : (
+                      <Volume2 className="w-3.5 h-3.5" />
+                    )}
+                  </button>
+
+                  {/* Overflow menu: monitor, pin, settings */}
                   <div className="relative">
                     <button
                       type="button"
@@ -2679,31 +2706,7 @@ export default function App() {
                             </>
                           )}
 
-                          <button
-                            type="button"
-                            role="menuitem"
-                            onClick={() => {
-                              setShowQuickMenu(false);
-                              setShowAudioSwitcher(true);
-                            }}
-                            onContextMenu={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setShowQuickMenu(false);
-                              cycleAudioOutput();
-                            }}
-                            title="Klik: perangkat audio · Klik-kanan: ganti output langsung"
-                            className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-[11px] text-neutral-300 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
-                          >
-                            {audioStatus?.is_muted || audioStatus?.master_volume === 0 ? (
-                              <VolumeX className="w-3.5 h-3.5 shrink-0 text-rose-400" />
-                            ) : (
-                              <Volume2 className="w-3.5 h-3.5 shrink-0" />
-                            )}
-                            <span className="truncate">
-                              {audioStatus?.current_output_name || "Perangkat Audio"}
-                            </span>
-                          </button>
+
 
                           {availableMonitors.length > 1 && (
                             <button
@@ -2845,25 +2848,7 @@ export default function App() {
                           : `System Clock: ${time}`}
                       </span>
 
-                      {audioStatus?.current_output_name && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setShowAudioSwitcher(true);
-                          }}
-                          className="flex items-center gap-1 mt-1 px-2 py-0.5 rounded-full bg-white/5 hover:bg-white/10 border border-white/5 transition-all text-[11px] text-neutral-400 hover:text-neutral-200 w-fit max-w-[200px]"
-                          title="Switch audio output device"
-                        >
-                          <Volume2
-                            className="w-2.5 h-2.5 shrink-0"
-                            style={{ color: settings.accentColor }}
-                          />
-                          <span className="truncate">
-                            {audioStatus.current_output_name}
-                          </span>
-                        </button>
-                      )}
+
                     </div>
                   </div>
 
