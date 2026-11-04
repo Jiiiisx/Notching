@@ -2547,9 +2547,6 @@ export default function App() {
                   {/* Module Navigation: centred, out of the action cluster */}
                   <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-0.5 px-1 py-0.5 bg-white/5 rounded-full border border-white/5">
                     {pinnedNav.map(({ id, label, icon: Icon }) => {
-                      // Media icon is redundant while the media module (with its own view
-                      // switcher) is active — hiding it opens room in the header row
-                      if (id === "media" && activeModule === "media") return null;
                       const isActive = activeModule === id;
                       const hasUnread = id === "notifications" && unreadNotifCount > 0;
                       return (
@@ -2579,50 +2576,6 @@ export default function App() {
                       );
                     })}
                   </div>
-
-                  {/* View Switcher: Player, Lyrics, Queue (only in media module) */}
-                  {activeModule === "media" && media.has_media && (
-                    <div className="flex items-center bg-white/5 rounded-lg p-0.5 border border-white/5">
-                      <button
-                        onClick={(e) => switchView(e, "player")}
-                        title="Player"
-                        aria-label="Tampilan player"
-                        className={`p-1 rounded-md transition-colors ${
-                          expandedView === "player"
-                            ? "bg-white/15 text-white"
-                            : "text-neutral-400 hover:text-white"
-                        }`}
-                      >
-                        <Music2 className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={(e) => switchView(e, "lyrics")}
-                        title="Lyrics"
-                        aria-label="Tampilan lirik"
-                        className="p-1 rounded-md transition-colors"
-                        style={
-                          expandedView === "lyrics"
-                            ? { backgroundColor: `${settings.accentColor}25`, color: settings.accentColor }
-                            : { color: "#9ca3af" }
-                        }
-                      >
-                        <Mic2 className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={(e) => switchView(e, "queue")}
-                        title="Queue"
-                        aria-label="Tampilan antrean"
-                        className="p-1 rounded-md transition-colors"
-                        style={
-                          expandedView === "queue"
-                            ? { backgroundColor: `${settings.accentColor}25`, color: settings.accentColor }
-                            : { color: "#9ca3af" }
-                        }
-                      >
-                        <ListMusic className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  )}
 
                   {/* Audio switcher: direct one-click access from any module */}
                   <button
@@ -2818,10 +2771,53 @@ export default function App() {
                       transition={{ duration: 0.18 }}
                       className="h-full flex flex-col justify-between pl-3 pr-10"
                     >
-                      {/* Middle Section: Player OR Lyrics OR Queue */}
+                      {/* View switcher: stable sub-navigation inside the media module (header stays constant) */}
+                      <div className="flex justify-center py-0.5 shrink-0">
+                        <div className="flex items-center bg-white/5 rounded-lg p-0.5 border border-white/5">
+                        <button
+                          onClick={(e) => switchView(e, "player")}
+                          title="Player"
+                          aria-label="Tampilan player"
+                          className={`p-1 rounded-md transition-colors ${
+                            expandedView === "player"
+                              ? "bg-white/15 text-white"
+                              : "text-neutral-400 hover:text-white"
+                          }`}
+                        >
+                          <Music2 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={(e) => switchView(e, "lyrics")}
+                          title="Lyrics"
+                          aria-label="Tampilan lirik"
+                          className="p-1 rounded-md transition-colors"
+                          style={
+                            expandedView === "lyrics"
+                              ? { backgroundColor: `${settings.accentColor}25`, color: settings.accentColor }
+                              : { color: "#9ca3af" }
+                          }
+                        >
+                          <Mic2 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={(e) => switchView(e, "queue")}
+                          title="Queue"
+                          aria-label="Tampilan antrean"
+                          className="p-1 rounded-md transition-colors"
+                          style={
+                            expandedView === "queue"
+                              ? { backgroundColor: `${settings.accentColor}25`, color: settings.accentColor }
+                              : { color: "#9ca3af" }
+                          }
+                        >
+                          <ListMusic className="w-3.5 h-3.5" />
+                        </button>
+                    </div>
+                      </div>
+                                    {/* Middle Section: Player OR Lyrics OR Queue */}
               {expandedView === "player" ? (
                 <>
-                  <div className="flex items-center gap-3.5 py-1.5">
+                  <div className="flex items-center gap-3.5 py-1">
                     <div className="w-12 h-12 rounded-xl bg-neutral-900 border border-white/10 flex items-center justify-center shrink-0 overflow-hidden shadow-inner">
                       {media.has_media ? (
                         <Music2
@@ -2859,7 +2855,7 @@ export default function App() {
 
                   {/* Track Progress Bar */}
                   {media.has_media && media.duration_sec > 0 && (
-                    <div className="flex flex-col gap-1.5 py-1.5">
+                    <div className="flex flex-col gap-1.5 py-1">
                       <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
                         <div
                           className="h-full rounded-full transition-all duration-300"
