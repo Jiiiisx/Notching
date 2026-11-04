@@ -182,6 +182,13 @@ function estimateTextWidth(
   return Math.ceil(width * scale) + 6;
 }
 
+// Direction-aware slide for module carousel transitions (navbar-like fluidity)
+const moduleVariants = {
+  enter: (dir: number) => ({ opacity: 0, x: dir >= 0 ? 28 : -28 }),
+  center: { opacity: 1, x: 0 },
+  exit: (dir: number) => ({ opacity: 0, x: dir >= 0 ? -28 : 28 }),
+};
+
 export default function App() {
   const [settings, setSettings] = useState<NotchSettings>(loadSettings);
   const [expanded, setExpanded] = useState(false);
@@ -510,11 +517,17 @@ export default function App() {
           ? MODULE_IDS[(currentIndex - 1 + MODULE_IDS.length) % MODULE_IDS.length]
           : MODULE_IDS[(currentIndex + 1) % MODULE_IDS.length];
     }
+    // Slide direction follows the shortest path around the module ring
+    const from = MODULE_IDS.indexOf(activeModule);
+    const to = MODULE_IDS.indexOf(next);
+    const step = (to - from + MODULE_IDS.length) % MODULE_IDS.length;
+    moduleDirRef.current = step <= MODULE_IDS.length / 2 ? 1 : -1;
     setActiveModule(next);
     // Write-through so the last visited page survives an immediate restart
     localStorage.setItem("notch_active_module", next);
   };
 
+  const moduleDirRef = useRef(1);
   const lastWheelTimeRef = useRef(0);
   const handleContainerWheel = (e: React.WheelEvent) => {
     // If notch is collapsed, scrolling vertically or horizontally cycles modules
@@ -2761,18 +2774,20 @@ export default function App() {
 
               {/* Carousel Content Container */}
               <div className="flex-1 overflow-hidden relative pt-1">
-                <AnimatePresence mode="wait" initial={false}>
+                <AnimatePresence mode="wait" initial={false} custom={moduleDirRef.current}>
                   {activeModule === "media" ? (
                     <motion.div
                       key="media-module"
-                      initial={{ opacity: 0, x: -24 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: -24 }}
-                      transition={{ duration: 0.18 }}
+                      custom={moduleDirRef.current}
+                      variants={moduleVariants}
+                      initial="enter"
+                      animate="center"
+                      exit="exit"
+                      transition={{ duration: 0.14, ease: "easeOut" }}
                       className="h-full flex flex-col justify-between pl-3 pr-10"
                     >
                       {/* View switcher: stable sub-navigation inside the media module (header stays constant) */}
-                      <div className="flex justify-center py-0.5 shrink-0">
+                      <div className="flex justify-end pr-2 py-0.5 shrink-0">
                         <div className="flex items-center bg-white/5 rounded-lg p-0.5 border border-white/5">
                         <button
                           onClick={(e) => switchView(e, "player")}
@@ -3051,10 +3066,12 @@ export default function App() {
             /* Notification Center Module (Phone Link & Laptop) */
             <motion.div
               key="notifications-module"
-              initial={{ opacity: 0, x: 24 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 24 }}
-              transition={{ duration: 0.18 }}
+              custom={moduleDirRef.current}
+              variants={moduleVariants}
+              initial="enter"
+              animate="center"
+              exit="exit"
+              transition={{ duration: 0.14, ease: "easeOut" }}
               className="h-full pt-1 px-10"
             >
               <NotificationCenter
@@ -3069,10 +3086,12 @@ export default function App() {
             /* To-Do List Module */
             <motion.div
               key="todo-module"
-              initial={{ opacity: 0, x: 24 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 24 }}
-              transition={{ duration: 0.18 }}
+              custom={moduleDirRef.current}
+              variants={moduleVariants}
+              initial="enter"
+              animate="center"
+              exit="exit"
+              transition={{ duration: 0.14, ease: "easeOut" }}
               className="h-full pt-1 px-10"
             >
               <TodoList
@@ -3089,10 +3108,12 @@ export default function App() {
             /* Quick Shelf & Stash Module */
             <motion.div
               key="shelf-module"
-              initial={{ opacity: 0, x: 24 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 24 }}
-              transition={{ duration: 0.18 }}
+              custom={moduleDirRef.current}
+              variants={moduleVariants}
+              initial="enter"
+              animate="center"
+              exit="exit"
+              transition={{ duration: 0.14, ease: "easeOut" }}
               className="h-full pt-1 px-10"
             >
               <Shelf
@@ -3104,10 +3125,12 @@ export default function App() {
             /* Pomodoro Module */
             <motion.div
               key="pomodoro-module"
-              initial={{ opacity: 0, x: 24 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 24 }}
-              transition={{ duration: 0.18 }}
+              custom={moduleDirRef.current}
+              variants={moduleVariants}
+              initial="enter"
+              animate="center"
+              exit="exit"
+              transition={{ duration: 0.14, ease: "easeOut" }}
               className="h-full pt-1 px-10"
             >
               <Pomodoro accentColor={settings.accentColor} />
@@ -3116,10 +3139,12 @@ export default function App() {
             /* Prayer Schedule Module */
             <motion.div
               key="prayer-module"
-              initial={{ opacity: 0, x: 24 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 24 }}
-              transition={{ duration: 0.18 }}
+              custom={moduleDirRef.current}
+              variants={moduleVariants}
+              initial="enter"
+              animate="center"
+              exit="exit"
+              transition={{ duration: 0.14, ease: "easeOut" }}
               className="h-full pt-1 px-10"
             >
               <PrayerSchedule
@@ -3131,10 +3156,12 @@ export default function App() {
             /* AI Agent Module (standalone, 9Router) */
             <motion.div
               key="agent-module"
-              initial={{ opacity: 0, x: 24 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 24 }}
-              transition={{ duration: 0.18 }}
+              custom={moduleDirRef.current}
+              variants={moduleVariants}
+              initial="enter"
+              animate="center"
+              exit="exit"
+              transition={{ duration: 0.14, ease: "easeOut" }}
               className="h-full px-6 pt-1 pb-2"
             >
               <AgentPanel
@@ -3151,10 +3178,12 @@ export default function App() {
             /* Performance Monitor Module */
             <motion.div
               key="perf-module"
-              initial={{ opacity: 0, x: 24 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 24 }}
-              transition={{ duration: 0.18 }}
+              custom={moduleDirRef.current}
+              variants={moduleVariants}
+              initial="enter"
+              animate="center"
+              exit="exit"
+              transition={{ duration: 0.14, ease: "easeOut" }}
               className="h-full pt-1 px-10 pb-3.5"
             >
               <PerformanceHUD
