@@ -13,7 +13,12 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::Ordering;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+
+/// Last ms timestamp a ScaleFactorChanged handler spawned a reposition thread.
+/// Throttles thread spawn storms during monitor/DPI oscillation (RAM leak fix).
+static LAST_REPOSITION_SPAWN_MS: AtomicU64 = AtomicU64::new(0);
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
@@ -1457,8 +1462,19 @@ pub fn run() {
             }
             if window.label() == "main" {
                 if let WindowEvent::ScaleFactorChanged { .. } = event {
-                    let app_handle = window.app_handle().clone();
-                    std::thread::spawn(move || {
+                    // Throttle: during monitor/DPI oscillation storms this event can fire
+                    // hundreds of times per second; each spawn used to create a thread that
+                    // may block forever on a DWM/COM LpcReply, accumulating thousands of
+                    // stuck threads (the 14k-thread / 700 MB RAM leak). Cap to 5 spawns/s.
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    let last = LAST_REPOSITION_SPAWN_MS.load(Ordering::Relaxed);
+                    if now_ms.saturating_sub(last) >= 200 {
+                        LAST_REPOSITION_SPAWN_MS.store(now_ms, Ordering::Relaxed);
+                        let app_handle = window.app_handle().clone();
+                        std::thread::spawn(move || {
                         std::thread::sleep(std::time::Duration::from_millis(30));
                         if let Some(main_win) = app_handle.get_webview_window("main") {
                             let effective_monitor = if let Some(state) =
@@ -1482,7 +1498,8 @@ pub fn run() {
                                 effective_monitor.as_deref(),
                             );
                         }
-                    });
+                        });
+                    }
                 }
             }
         })
